@@ -1,3 +1,8 @@
+# legacy code
+docs/legacy/
+test_data/*
+!test_data/sources.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
