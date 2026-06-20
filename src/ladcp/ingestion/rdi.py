@@ -89,5 +89,6 @@ def load_rdi(path: Path) -> RDIData:
         blnk_m=fl["blnk_m"],
         dist_m=fl["dist_m"],
         npng=fl["npng"],
+        coord_transform=fl["coord_transform"],
         serial=fl["serial"],
     )

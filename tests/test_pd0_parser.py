@@ -227,6 +227,23 @@ class TestPd0Parser:
         assert abs(bt["range_m"][0] - 450.0) < 0.01  # 45000 * 0.01
         assert abs(bt["vel_ms"][0] - (-0.1)) < 1e-4  # -100 * 0.001
 
+    def test_fixed_leader_coord_transform(self):
+        from ladcp.ingestion._pd0 import _read_fixed_leader
+
+        buf = bytearray(60)
+        buf[23] = 0x04  # Beam + gimbaled
+        fl = _read_fixed_leader(bytes(buf), 0)
+        assert fl["coord_transform"] == 4
+
+    def test_fixed_leader_coord_transform_earth(self):
+        from ladcp.ingestion._pd0 import _read_fixed_leader
+
+        buf = bytearray(60)
+        buf[23] = 0b00011000  # Earth frame (bits 4-3 = 11 = 3)
+        fl = _read_fixed_leader(bytes(buf), 0)
+        assert fl["coord_transform"] == 0b00011000
+        assert (fl["coord_transform"] >> 3) & 0x03 == 3  # Earth
+
 
 class TestLoadRdi:
     def _write_temp_pd0(self, tmp_path, nbin=4, nens=3):
@@ -269,3 +286,11 @@ class TestLoadRdi:
         d = load_rdi(path)
         # All non-NaN velocities should be < 10 m/s for the synthetic data
         assert np.nanmax(np.abs(d.u)) < 10.0
+
+    def test_coord_transform_field_present(self, tmp_path):
+        from ladcp.ingestion.rdi import load_rdi
+
+        path = self._write_temp_pd0(tmp_path, nbin=4, nens=3)
+        d = load_rdi(path)
+        assert hasattr(d, "coord_transform")
+        assert isinstance(d.coord_transform, int)

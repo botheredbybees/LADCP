@@ -42,4 +42,5 @@ class RDIData:
     blnk_m: float
     dist_m: float
     npng: int
+    coord_transform: int  # EX byte: bits 4-3 = frame, 2=tilt, 1=binmap, 0=3beam
     serial: list[int]

@@ -98,3 +98,16 @@ def test_dl_ul_time_overlap(dl_path, ul_path):
     overlap_start = max(dl_start, ul_start)
     overlap_end = min(dl_end, ul_end)
     assert overlap_end > overlap_start, "DL and UL time ranges do not overlap"
+
+
+@pytest.mark.integration
+def test_dl_coord_transform_beam_gimbaled(dl_path):
+    """P16N 003DL000.000 recorded in beam-frame with gimbaled tilt (EX=0x04)."""
+    d = load_rdi(dl_path)
+    assert d.coord_transform == 4, (
+        f"Expected EX=4 (beam+gimbaled), got {d.coord_transform}"
+    )
+    assert (d.coord_transform >> 3) & 0x03 == 0, (
+        "Expected beam-frame (coord bits = 0b00)"
+    )
+    assert bool(d.coord_transform & 0x04), "Expected gimbaled bit set"

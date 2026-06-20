@@ -131,6 +131,7 @@ def _read_fixed_leader(body: bytes, start: int) -> dict:
       blen_cm     uint16  @ +10
       blnk_cm     uint16  @ +12
       skip 16 bytes       @ +14
+      coord_transform uint8 @ +23
       dist_cm     uint16  @ +30
       plen_cm     uint16  @ +32
       skip 6 bytes        @ +34
@@ -141,6 +142,7 @@ def _read_fixed_leader(body: bytes, start: int) -> dict:
     npng, blen_cm, blnk_cm = struct.unpack_from("<HHH", body, p + 1)
     # skip 16 bytes (water profiling mode, correlation threshold, etc.)
     p2 = p + 1 + 6 + 16
+    coord_transform = body[start + 23]
     dist_cm, plen_cm = struct.unpack_from("<HH", body, p2)
     # skip 6 bytes (ref layer, false target, spare, bandwidth)
     p3 = p2 + 4 + 6
@@ -150,6 +152,7 @@ def _read_fixed_leader(body: bytes, start: int) -> dict:
         "npng": npng,
         "blen_m": blen_cm * _FL_LEN_SCALE,
         "blnk_m": blnk_cm * _FL_LEN_SCALE,
+        "coord_transform": coord_transform,
         "dist_m": dist_cm * _FL_LEN_SCALE,
         "plen_m": plen_cm * _FL_LEN_SCALE,
         "serial": serial,
