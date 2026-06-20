@@ -11,6 +11,39 @@ import numpy as np
 from ladcp._typing import NDArray
 
 
+def _central_diff_shear(
+    u: NDArray,
+    v: NDArray,
+    w: NDArray,
+    izm: NDArray,
+    weight_mask: NDArray,
+) -> tuple[NDArray, NDArray, NDArray]:
+    """Compute stride-2 central-difference shear, weighted and NaN-padded.
+
+    Replicates MATLAB diff2(): x[2:,:] - x[:-2,:] divided by izm[2:] - izm[:-2].
+    First and last rows are NaN because no two-sided neighbour exists.
+    weight_mask is 1.0 where valid, NaN where excluded.
+    """
+    du = u[2:, :] - u[:-2, :]     # (nbin-2, nens)
+    dv = v[2:, :] - v[:-2, :]
+    dw = w[2:, :] - w[:-2, :]
+    dz = izm[2:, :] - izm[:-2, :]  # depth increment between skip-one neighbours
+
+    shear_u = np.full_like(u, np.nan)
+    shear_v = np.full_like(v, np.nan)
+    shear_w = np.full_like(w, np.nan)
+
+    shear_u[1:-1, :] = du / dz
+    shear_v[1:-1, :] = dv / dz
+    shear_w[1:-1, :] = dw / dz
+
+    shear_u *= weight_mask
+    shear_v *= weight_mask
+    shear_w *= weight_mask
+
+    return shear_u, shear_v, shear_w
+
+
 @dataclass
 class ShearProfile:
     """Depth-binned shear profile and integrated relative velocity.

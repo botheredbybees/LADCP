@@ -1,7 +1,7 @@
 """Unit tests for shear solution — src/ladcp/solution/shear.py."""
 import numpy as np
 import pytest
-from ladcp.solution.shear import ShearProfile, compute_shear
+from ladcp.solution.shear import ShearProfile, compute_shear, _central_diff_shear
 
 
 def _constant_shear_inputs(
@@ -61,3 +61,47 @@ def test_integrated_profile_is_zero_mean():
     result = compute_shear(u, v, w, izm, weight, dz=10.0)
     assert np.mean(result.u_rel) == pytest.approx(0.0, abs=1e-12)
     assert np.mean(result.v_rel) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_central_diff_shear_exact_gradient():
+    """Linear u = du_dz * z → shear = du_dz everywhere in interior."""
+    du_dz = 1e-3
+    nbin, nens = 6, 4
+    bin_spacing = 8.0
+    izm = np.outer(np.arange(nbin) * bin_spacing + 8.0, np.ones(nens))
+    u = izm * du_dz
+    v = np.zeros_like(u)
+    w = np.zeros_like(u)
+    weight_mask = np.ones((nbin, nens))
+    su, sv, sw = _central_diff_shear(u, v, w, izm, weight_mask)
+    # Interior bins (rows 1 to nbin-2) should equal du_dz exactly
+    interior = su[1:-1, :]
+    assert np.allclose(interior, du_dz, rtol=1e-10)
+
+
+def test_central_diff_shear_boundary_nan():
+    """First and last row must be NaN (no neighbour on one side)."""
+    u, v, w, izm, weight = _constant_shear_inputs()
+    mask = np.ones_like(u)
+    su, sv, sw = _central_diff_shear(u, v, w, izm, mask)
+    assert np.all(np.isnan(su[0, :]))
+    assert np.all(np.isnan(su[-1, :]))
+
+
+def test_central_diff_shear_weight_mask_applies():
+    """Bins with weight ≤ weight_min become NaN shear (caller pre-masks)."""
+    u, v, w, izm, _ = _constant_shear_inputs(nbin=6, nens=4)
+    # weight_mask is 1 everywhere except column 2 → NaN
+    mask = np.ones_like(u)
+    mask[:, 2] = np.nan
+    su, _, _ = _central_diff_shear(u, v, w, izm, mask)
+    assert np.all(np.isnan(su[:, 2]))
+
+
+def test_central_diff_shear_output_shape():
+    u, v, w, izm, weight = _constant_shear_inputs(nbin=8, nens=5)
+    mask = np.ones_like(u)
+    su, sv, sw = _central_diff_shear(u, v, w, izm, mask)
+    assert su.shape == (8, 5)
+    assert sv.shape == (8, 5)
+    assert sw.shape == (8, 5)
