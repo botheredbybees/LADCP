@@ -114,6 +114,32 @@ def _bin_average_shear(
     return usm, vsm, wsm, use, vse, wse, nn
 
 
+def _integrate_shear(
+    usm: NDArray,
+    vsm: NDArray,
+    wsm: NDArray,
+    dz: float,
+) -> tuple[NDArray, NDArray, NDArray]:
+    """Integrate shear from bottom up to produce zero-mean relative velocities.
+
+    NaN bins are replaced with 0 (no shear contribution) before integrating.
+    Replicates MATLAB: flipud(cumsum(flipud(usm))) * dz, then subtract mean.
+    """
+    u = np.where(np.isnan(usm), 0.0, usm)
+    v = np.where(np.isnan(vsm), 0.0, vsm)
+    w = np.where(np.isnan(wsm), 0.0, wsm)
+
+    ur = np.flipud(np.cumsum(np.flipud(u))) * dz
+    vr = np.flipud(np.cumsum(np.flipud(v))) * dz
+    wr = np.flipud(np.cumsum(np.flipud(w))) * dz
+
+    ur -= np.mean(ur)
+    vr -= np.mean(vr)
+    wr -= np.mean(wr)
+
+    return ur, vr, wr
+
+
 @dataclass
 class ShearProfile:
     """Depth-binned shear profile and integrated relative velocity.
@@ -168,4 +194,23 @@ def compute_shear(
     ShearProfile
         Depth-binned shear and integrated relative velocity profile.
     """
-    raise NotImplementedError
+    weight_mask = np.where(weight > weight_min, 1.0, np.nan)
+
+    shear_u, shear_v, shear_w = _central_diff_shear(u, v, w, izm, weight_mask)
+
+    z_max = float(np.nanmax(izm))
+    z_bins = np.arange(dz / 2, z_max + dz / 2, dz)
+
+    usm, vsm, wsm, use, vse, wse, nn = _bin_average_shear(
+        shear_u, shear_v, shear_w, izm, z_bins, dz, stdf
+    )
+
+    ur, vr, wr = _integrate_shear(usm, vsm, wsm, dz)
+
+    return ShearProfile(
+        z=z_bins,
+        u_shear=usm, v_shear=vsm, w_shear=wsm,
+        u_shear_err=use, v_shear_err=vse, w_shear_err=wse,
+        n=nn,
+        u_rel=ur, v_rel=vr, w_rel=wr,
+    )

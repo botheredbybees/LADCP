@@ -1,7 +1,7 @@
 """Unit tests for shear solution — src/ladcp/solution/shear.py."""
 import numpy as np
 import pytest
-from ladcp.solution.shear import ShearProfile, compute_shear, _central_diff_shear, _bin_average_shear
+from ladcp.solution.shear import ShearProfile, compute_shear, _central_diff_shear, _bin_average_shear, _integrate_shear
 
 
 def _constant_shear_inputs(
@@ -171,3 +171,43 @@ def test_bin_average_output_shapes():
     nz = len(z_bins)
     for arr in (usm, vsm, wsm, use, vse, wse, nn):
         assert arr.shape == (nz,)
+
+
+def test_integrate_shear_constant_shear_linear_profile():
+    """Constant shear s → integrated velocity grows linearly from deepest bin."""
+    nz = 10
+    dz = 10.0
+    shear = 1e-3  # s^-1, uniform
+    usm = np.full(nz, shear)
+    vsm = np.zeros(nz)
+    wsm = np.zeros(nz)
+    ur, vr, wr = _integrate_shear(usm, vsm, wsm, dz)
+    # After zero-mean, profile should be linear (slope = shear * dz)
+    diff = np.diff(ur)
+    assert np.allclose(diff, -shear * dz, atol=1e-12), \
+        "Integrated profile should decrease by shear*dz per bin (bottom-up)"
+
+
+def test_integrate_shear_zero_mean():
+    """Integrated profiles must have exactly zero mean."""
+    nz = 15
+    dz = 8.0
+    rng = np.random.default_rng(42)
+    usm = rng.standard_normal(nz) * 1e-3
+    vsm = rng.standard_normal(nz) * 1e-3
+    wsm = np.zeros(nz)
+    ur, vr, wr = _integrate_shear(usm, vsm, wsm, dz)
+    assert np.mean(ur) == pytest.approx(0.0, abs=1e-12)
+    assert np.mean(vr) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_integrate_shear_nan_gaps_filled_with_zero():
+    """NaN shear bins are treated as zero shear (no contribution to integral)."""
+    nz = 6
+    dz = 10.0
+    usm = np.array([np.nan, 1e-3, np.nan, 1e-3, np.nan, np.nan])
+    vsm = np.zeros(nz)
+    wsm = np.zeros(nz)
+    ur, vr, wr = _integrate_shear(usm, vsm, wsm, dz)
+    assert np.all(np.isfinite(ur)), "NaN gaps must not propagate to integrated profile"
+    assert np.mean(ur) == pytest.approx(0.0, abs=1e-12)
