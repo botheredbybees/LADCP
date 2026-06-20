@@ -1,6 +1,7 @@
 """CTD time-series loading and ADCP bin depth assignment."""
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ladcp.ingestion._pd0 import _to_julian
+from ladcp.ingestion._types import RDIData
 
 
 @dataclass
@@ -261,3 +263,37 @@ def load_ctd(path: Path | str, **kwargs) -> CTDTimeSeries:
         if "No *END* marker found" in str(e):
             return _read_generic_ascii(path, **kwargs)
         raise
+
+
+def assign_bin_depths(
+    rdi: RDIData,
+    ctd: CTDTimeSeries,
+    *,
+    looker: str = "down",
+    lat_deg: float | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Compute instrument depth and bin absolute depths from CTD and ADCP geometry.
+
+    Returns:
+        z_m: (nens,) instrument depth in metres, positive down
+        izm: (nbin, nens) absolute depth of each bin in metres, positive down
+    """
+    p_interp = np.interp(rdi.time_julian, ctd.time_julian, ctd.pressure_dbar)
+
+    if lat_deg is not None:
+        sin2 = math.sin(math.radians(lat_deg)) ** 2
+        g = 9.780318 * (1 + 5.2788e-3 * sin2) + 1.092e-6 * p_interp
+        z_m = (
+            9.72659 * p_interp
+            - 2.2512e-5 * p_interp**2
+            + 2.279e-10 * p_interp**3
+            - 1.82e-15 * p_interp**4
+        ) / g
+    else:
+        z_m = p_interp * 1.00445
+
+    bin_offsets = rdi.dist_m + np.arange(rdi.nbin) * rdi.blen_m  # (nbin,)
+    sign = 1.0 if looker == "down" else -1.0
+    izm = z_m[np.newaxis, :] + sign * bin_offsets[:, np.newaxis]  # (nbin, nens)
+
+    return z_m, izm

@@ -126,3 +126,76 @@ def test_generic_ascii_elapsed_time(tmp_path):
     assert abs(result.time_julian[1] - (1.0 / 86400.0 + start_julian)) < 1e-9
     assert abs(result.pressure_dbar[2] - 15.0) < 1.0
     assert abs(result.salinity[0] - 35.0) < 0.01
+
+
+from ladcp.ingestion._types import RDIData
+from ladcp.ingestion.ctd import assign_bin_depths
+
+
+def _make_rdi(nbin: int = 10, nens: int = 5, dist_m: float = 8.0, blen_m: float = 8.0) -> RDIData:
+    zeros2d = np.zeros((nbin, nens))
+    zeros1d = np.zeros(nens)
+    return RDIData(
+        u=zeros2d, v=zeros2d, w=zeros2d, e=zeros2d,
+        heading=zeros1d, pitch=zeros1d, roll=zeros1d,
+        time_julian=np.linspace(2451545.0, 2451545.5, nens),
+        temp_c=zeros1d, sound_vel_ms=np.full(nens, 1500.0),
+        echo=np.zeros((nbin, nens, 4), dtype=np.uint8),
+        corr=np.zeros((nbin, nens, 4), dtype=np.uint8),
+        pg=np.zeros((nbin, nens, 4), dtype=np.uint8),
+        btrack_range_m=np.zeros((4, nens)),
+        btrack_vel_ms=np.zeros((4, nens)),
+        nbin=nbin, nens=nens, blen_m=blen_m, blnk_m=4.0,
+        dist_m=dist_m, npng=4, coord_transform=0, serial=[0] * 8,
+    )
+
+
+def _make_ctd(nctd: int = 100) -> CTDTimeSeries:
+    return CTDTimeSeries(
+        time_julian=np.linspace(2451545.0, 2451545.5, nctd),
+        pressure_dbar=np.linspace(0.0, 4000.0, nctd),
+        temp_c=np.full(nctd, 15.0),
+        salinity=np.full(nctd, 35.0),
+    )
+
+
+def test_assign_bin_depths_shape():
+    rdi = _make_rdi(nbin=10, nens=5)
+    ctd = _make_ctd()
+    z_m, izm = assign_bin_depths(rdi, ctd)
+    assert z_m.shape == (5,)
+    assert izm.shape == (10, 5)
+
+
+def test_assign_bin_depths_down_deeper():
+    rdi = _make_rdi(nbin=5, nens=3, dist_m=8.0, blen_m=8.0)
+    ctd = _make_ctd()
+    z_m, izm = assign_bin_depths(rdi, ctd, looker="down")
+    # Each successive bin is deeper than the instrument
+    assert np.all(izm[0, :] > z_m)
+    assert np.all(izm[1, :] > izm[0, :])
+
+
+def test_assign_bin_depths_up_shallower():
+    rdi = _make_rdi(nbin=5, nens=3, dist_m=8.0, blen_m=8.0)
+    ctd = _make_ctd()
+    z_m, izm = assign_bin_depths(rdi, ctd, looker="up")
+    # Each successive bin is shallower than the instrument
+    assert np.all(izm[0, :] < z_m)
+    assert np.all(izm[1, :] < izm[0, :])
+
+
+def test_assign_bin_depths_nan_propagation():
+    # Use exact time-matching so np.interp returns NaN at ensemble index 1
+    # (np.interp returns fp[i] exactly when x matches xp[i] — reliable NaN injection)
+    nbin, nens = 4, 3
+    rdi = _make_rdi(nbin=nbin, nens=nens)
+    ctd_nan = CTDTimeSeries(
+        time_julian=rdi.time_julian.copy(),           # exact same times
+        pressure_dbar=np.array([100.0, np.nan, 300.0]),
+        temp_c=np.full(nens, 15.0),
+        salinity=np.full(nens, 35.0),
+    )
+    z_m, izm = assign_bin_depths(rdi, ctd_nan)
+    assert np.isnan(z_m[1])
+    assert np.all(np.isnan(izm[:, 1]))
