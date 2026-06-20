@@ -163,10 +163,10 @@ def _read_sbe_ascii(
         raise ValueError(f"# nquan not found in header of {path}")
     col_roles = {i: _map_column(name) for i, name in header_info['columns'].items()}
     bad_flag = header_info['bad_flag']
-    time_start_julian: float | None = (
-        header_info.get('start_time_julian') or kwargs.get('time_start_julian')
-    )
+    _hdr_t = header_info.get('start_time_julian')
+    time_start_julian: float | None = _hdr_t if _hdr_t is not None else kwargs.get('time_start_julian')
 
+    # data_offset is unused here; np.loadtxt skips the header via comments=['*','#']
     arr = np.loadtxt(path, skiprows=0, comments=['*', '#']).reshape(-1, nquan)
     arr = arr.astype(np.float64)
     if bad_flag is not None:
@@ -184,9 +184,8 @@ def _read_sbe_binary(
         raise ValueError(f"# nquan not found in header of {path}")
     col_roles = {i: _map_column(name) for i, name in header_info['columns'].items()}
     bad_flag = header_info['bad_flag']
-    time_start_julian: float | None = (
-        header_info.get('start_time_julian') or kwargs.get('time_start_julian')
-    )
+    _hdr_t = header_info.get('start_time_julian')
+    time_start_julian: float | None = _hdr_t if _hdr_t is not None else kwargs.get('time_start_julian')
 
     with open(path, 'rb') as f:
         f.seek(data_offset)
@@ -257,7 +256,19 @@ def _read_generic_ascii(path: Path, **kwargs) -> CTDTimeSeries:
 
 
 def load_ctd(path: Path | str, **kwargs) -> CTDTimeSeries:
-    """Load a CTD time-series file; auto-detect SBE binary, SBE ASCII, or generic ASCII."""
+    """Load a CTD time-series file; auto-detect SBE binary, SBE ASCII, or generic ASCII.
+
+    For generic ASCII files, kwargs configure the reader:
+        skip_rows (int): header lines to skip (default 0)
+        col_time, col_pressure, col_temp, col_salinity (int): 0-based column indices
+        time_base ('elapsed_s' | 'julian'): how to interpret the time column
+        time_start_julian (float): required when time_base='elapsed_s'
+
+    For SBE files, time_start_julian can override the header-derived value.
+    Note: ADCP ensembles outside the CTD time range receive the first/last CTD
+    pressure via flat extrapolation in assign_bin_depths(); mask those ensembles
+    in QA before trusting the interpolated depth.
+    """
     path = Path(path)
     try:
         lines, data_offset = _read_header_lines(path)

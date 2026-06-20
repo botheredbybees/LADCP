@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
-from ladcp.ingestion.ctd import CTDTimeSeries, _parse_sbe_header, _map_column
+from pathlib import Path
+from ladcp.ingestion.ctd import CTDTimeSeries, _parse_sbe_header, _map_column, load_ctd
+from ladcp.ingestion._pd0 import _to_julian
 
 BINARY_HEADER_LINES = [
     "* Sea-Bird SBE 9 Data File:\n",
@@ -38,10 +40,6 @@ def test_column_name_mapping_temperature():
     assert _map_column('t090C') == 'temp'
     assert _map_column('t190C') == 'temp'
 
-
-import numpy as np
-from pathlib import Path
-from ladcp.ingestion.ctd import load_ctd
 
 def _make_binary_cnv(tmp_path: Path, data: np.ndarray, bad_flag: float = -9.990e-29) -> Path:
     nquan = data.shape[1]
@@ -199,3 +197,49 @@ def test_assign_bin_depths_nan_propagation():
     z_m, izm = assign_bin_depths(rdi, ctd_nan)
     assert np.isnan(z_m[1])
     assert np.all(np.isnan(izm[:, 1]))
+
+
+def _make_binary_cnv_with_start_time(
+    tmp_path: Path,
+    data: np.ndarray,
+    start_time: str,
+    bad_flag: float = -9.990e-29,
+) -> Path:
+    nquan = data.shape[1]
+    header = (
+        f"# nquan = {nquan}\n"
+        "# name 0 = prDM: Pressure [db]\n"
+        "# name 1 = t090C: Temperature\n"
+        "# name 2 = sal00: Salinity\n"
+        "# name 3 = timeJ: Julian Days\n"
+        f"# bad_flag = {bad_flag}\n"
+        "# file_type = binary\n"
+        f"# start_time = {start_time}\n"
+        "*END*\n"
+    ).encode()
+    p = tmp_path / "test_doy.cnv"
+    p.write_bytes(header + data.astype('<f4').tobytes())
+    return p
+
+
+def test_timej_day_of_year_converted_to_absolute_julian(tmp_path: Path):
+    """SBE timeJ is day-of-year (1=Jan 1); load_ctd() must convert to absolute Julian day."""
+    # Feb 5 2015 = day 36 of 2015; day 36.5 = noon on Feb 5
+    data = np.array([
+        [100.0, 15.0, 35.0, 5.0],   # Jan 5 00:00
+        [200.0, 14.0, 35.1, 5.5],   # Jan 5 12:00
+        [300.0, 13.0, 35.2, 6.0],   # Jan 6 00:00
+    ], dtype=np.float64)
+    p = _make_binary_cnv_with_start_time(tmp_path, data, "Jan 05 2015 10:30:00")
+    result = load_ctd(p)
+
+    jan1_2015 = _to_julian(2015, 1, 1, 0.0)
+    expected_t0 = jan1_2015 + (5.0 - 1.0)   # day 5 → offset 4 days from Jan 1
+    expected_t1 = jan1_2015 + (5.5 - 1.0)
+    expected_t2 = jan1_2015 + (6.0 - 1.0)
+
+    assert abs(result.time_julian[0] - expected_t0) < 1e-9
+    assert abs(result.time_julian[1] - expected_t1) < 1e-9
+    assert abs(result.time_julian[2] - expected_t2) < 1e-9
+    # Values must be absolute Julian days (~2.4 million), not day-of-year (1–366)
+    assert result.time_julian[0] > 1000
