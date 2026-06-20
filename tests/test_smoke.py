@@ -48,16 +48,12 @@ def test_stubs_raise_not_implemented():
 
     import numpy as np
 
-    from ladcp.ingestion.rdi import load_rdi
     from ladcp.qa.diagnostics import tilt_heading_plot
     from ladcp.solution.shear import shear_solution
     from ladcp.transforms.beam2earth import janus5beam2earth
 
     dummy = np.zeros((10, 8))
     dummy_1d = np.zeros(10)
-
-    with pytest.raises(NotImplementedError):
-        load_rdi(Path("nonexistent.000"))
 
     with pytest.raises(NotImplementedError):
         janus5beam2earth(dummy_1d, dummy_1d, dummy_1d, 20.0, dummy, dummy, dummy, dummy)
