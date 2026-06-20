@@ -44,6 +44,7 @@ def _parse_sbe_header(lines: list[str]) -> dict:
         'bad_flag': None,
         'file_type': 'ascii',
         'start_time_julian': None,
+        'start_year': None,
     }
     for line in lines:
         if line.strip() == '*END*':
@@ -60,9 +61,13 @@ def _parse_sbe_header(lines: list[str]) -> dict:
         elif 'file_type = binary' in content:
             result['file_type'] = 'binary'
         elif content.startswith('start_time ='):
-            result['start_time_julian'] = _parse_start_time(
-                content.split('=', 1)[1].strip()
-            )
+            raw_date = content.split('=', 1)[1].strip()
+            result['start_time_julian'] = _parse_start_time(raw_date)
+            try:
+                dt = datetime.strptime(raw_date.strip()[:20], '%b %d %Y %H:%M:%S')
+                result['start_year'] = dt.year
+            except ValueError:
+                pass
     return result
 
 
@@ -100,6 +105,7 @@ def _build_ctd_time_series(
     arr: np.ndarray,
     col_roles: dict[int, str | None],
     time_start_julian: float | None,
+    start_year: int | None = None,
 ) -> CTDTimeSeries:
     """Assemble CTDTimeSeries from a (n_scans, nquan) float64 array."""
     time_raw: np.ndarray | None = None
@@ -127,7 +133,12 @@ def _build_ctd_time_series(
         raise ValueError("No time column found (expected: timeJ or timeS)")
 
     if time_role == 'julian':
-        time_julian = time_raw
+        if start_year is not None and len(time_raw) > 0 and time_raw[0] <= 366:
+            # timeJ is day-of-year (1 = Jan 1 00:00); convert to absolute Julian day
+            jan1_julian = _to_julian(start_year, 1, 1, 0.0)
+            time_julian = jan1_julian + (time_raw - 1.0)
+        else:
+            time_julian = time_raw
     else:
         if time_start_julian is None:
             raise ValueError(
@@ -162,7 +173,7 @@ def _read_sbe_ascii(
         mask = np.isclose(arr, bad_flag, rtol=1e-3, atol=0)
         arr[mask] = np.nan
 
-    return _build_ctd_time_series(arr, col_roles, time_start_julian)
+    return _build_ctd_time_series(arr, col_roles, time_start_julian, start_year=header_info.get('start_year'))
 
 
 def _read_sbe_binary(
@@ -191,7 +202,7 @@ def _read_sbe_binary(
         mask = np.isclose(arr, bad_flag, rtol=1e-3, atol=0)
         arr[mask] = np.nan
 
-    return _build_ctd_time_series(arr, col_roles, time_start_julian)
+    return _build_ctd_time_series(arr, col_roles, time_start_julian, start_year=header_info.get('start_year'))
 
 
 def _read_generic_ascii(path: Path, **kwargs) -> CTDTimeSeries:
