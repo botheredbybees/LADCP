@@ -91,7 +91,23 @@ def _make_velocity_block(nbin=3, values=None):
     return buf
 
 
-def _make_minimal_ensemble(nbin=3):
+def _make_bottom_track():
+    """Build a bottom track data block body (without the 2-byte ID prefix 0x0600).
+
+    Byte layout follows rdbtrack() in docs/legacy/loadrdi.m:
+      skip 14 bytes
+      4× uint16 range  (raw: 45000, 45100, 45200, 45300 → 450.0..453.0 m at 0.01 scale)
+      4× int16  vel    (raw: -100, 200, -150, 50 → -0.1..0.05 m/s at 0.001 scale)
+      8× uint8  corr+pg (75,75,75,75, 80,80,80,80)
+    """
+    buf = bytearray(14 + 8 + 8 + 8)  # skip14 + range(8) + vel(8) + corr_pg(8)
+    struct.pack_into("<4H", buf, 14, 45000, 45100, 45200, 45300)
+    struct.pack_into("<4h", buf, 22, -100, 200, -150, 50)
+    struct.pack_into("8B", buf, 30, 75, 75, 75, 75, 80, 80, 80, 80)
+    return bytes(buf)
+
+
+def _make_minimal_ensemble(nbin=3, with_btrack=False):
     """Build a complete minimal PD0 ensemble with known values."""
     # IDs as used by rdread: fixed=0x0000, variable=0x0080, velocity=0x0100
     # correlation=0x0200, echo=0x0300, percent_good=0x0400, bottom_track=0x0600
@@ -121,6 +137,9 @@ def _make_minimal_ensemble(nbin=3):
         id_echo + echo_body,
         id_pg + pg_body,
     ]
+    if with_btrack:
+        blocks.append(struct.pack("<H", 0x0600) + _make_bottom_track())
+
     n_types = len(blocks)
     header_size = 6 + 2 * n_types  # magic(2) + nbytes(2) + spare(1) + ndt(1) + offsets
 
@@ -169,6 +188,8 @@ class TestPd0Parser:
         assert abs(vl["roll_deg"] - 2.0) < 0.01  # 200 * 0.01
         assert abs(vl["temp_c"] - 2.0) < 0.01  # 200 * 0.01
         assert abs(vl["sound_vel_ms"] - 1500) < 0.1
+        # Default helper: 2018-11-05 12:00:00 → JD 2458428.0 (noon)
+        assert abs(vl["time_julian"] - 2458428.0) < 1.0
 
     def test_velocity_scaling_and_bad_values(self):
         from ladcp.ingestion._pd0 import parse_pd0
@@ -194,3 +215,13 @@ class TestPd0Parser:
         ens = _make_minimal_ensemble(nbin=3)
         ensembles = parse_pd0(ens + ens)
         assert len(ensembles) == 2
+
+    def test_bottom_track_parsing(self):
+        from ladcp.ingestion._pd0 import parse_pd0
+
+        data = _make_minimal_ensemble(nbin=3, with_btrack=True)
+        bt = parse_pd0(data)[0]["bottom_track"]
+        assert bt is not None
+        assert bt["range_m"].shape == (4,)
+        assert abs(bt["range_m"][0] - 450.0) < 0.01  # 45000 * 0.01
+        assert abs(bt["vel_ms"][0] - (-0.1)) < 1e-4  # -100 * 0.001
