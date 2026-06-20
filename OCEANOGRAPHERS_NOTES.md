@@ -26,7 +26,7 @@ Nothing downstream of ingestion exists yet: no coordinate transforms, no shear c
 |---|---|---|
 | `loadrdi.m` — read PD0 binary into structs `d`, `p`, `de` | `load_rdi(path)` → `RDIData` | **Done** |
 | `janus5beam2earth()` (ADCPtools) — beam→Earth transform | `janus5beam2earth()` | Stub |
-| `getshear2.m` — compute shear profiles | `shear_solution()` | Stub |
+| `getshear2.m` — compute shear profiles | `compute_shear()` → `ShearProfile` | **Done** |
 | `getinv.m` / `prepinv.m` — velocity inversion | (not yet designed) | Planned |
 | `getbtrack.m` — bottom-track processing | (not yet designed) | Planned |
 | `fixcompass.m` / `checktilt.m` — heading/tilt corrections | (not yet designed) | Planned |

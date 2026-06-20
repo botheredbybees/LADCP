@@ -84,7 +84,7 @@ src/ladcp/
 ├── transforms/
 │   └── beam2earth.py        janus5beam2earth() stub (NotImplementedError)
 ├── solution/
-│   └── shear.py             shear_solution() stub
+│   └── shear.py             compute_shear() → ShearProfile
 └── qa/
     └── diagnostics.py       tilt_heading_plot() stub
 ```

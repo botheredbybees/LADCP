@@ -94,22 +94,22 @@ def _bin_average_shear(
             (sv, vsm, vse),
         ]:
             med = np.median(arr)
-            std = np.std(arr)
+            std = np.std(arr, ddof=1)
             # <= not < so std=0 (constant window) keeps all values rather than rejecting all
             keep = np.abs(arr - med) <= stdf * std
             if keep.sum() > 1:
                 mean_out[k] = np.mean(arr[keep])
-                std_out[k] = np.std(arr[keep])
+                std_out[k] = np.std(arr[keep], ddof=1)
 
         # w may have fewer finite values — filter independently
         if len(sw) > 2:
             med_w = np.median(sw)
-            std_w = np.std(sw)
+            std_w = np.std(sw, ddof=1)
             # <= not < so std=0 (constant window) keeps all values rather than rejecting all
             keep_w = np.abs(sw - med_w) <= stdf * std_w
             if keep_w.sum() > 1:
                 wsm[k] = np.mean(sw[keep_w])
-                wse[k] = np.std(sw[keep_w])
+                wse[k] = np.std(sw[keep_w], ddof=1)
 
     return usm, vsm, wsm, use, vse, wse, nn
 
@@ -155,7 +155,7 @@ class ShearProfile:
     u_shear_err: NDArray # (nz,) 1-σ shear uncertainty, s⁻¹
     v_shear_err: NDArray # (nz,) 1-σ shear uncertainty, s⁻¹
     w_shear_err: NDArray # (nz,) 1-σ shear uncertainty, s⁻¹
-    n: NDArray           # (nz,) int — estimates used per bin after editing
+    n: NDArray           # (nz,) int — estimates in window before outlier editing
     u_rel: NDArray       # (nz,) relative eastward velocity, m/s (zero-mean)
     v_rel: NDArray       # (nz,) relative northward velocity, m/s (zero-mean)
     w_rel: NDArray       # (nz,) relative vertical velocity, m/s (zero-mean)
@@ -199,7 +199,7 @@ def compute_shear(
     shear_u, shear_v, shear_w = _central_diff_shear(u, v, w, izm, weight_mask)
 
     z_max = float(np.nanmax(izm))
-    z_bins = np.arange(dz / 2, z_max + dz / 2, dz)
+    z_bins = np.arange(dz / 2, z_max, dz)
 
     usm, vsm, wsm, use, vse, wse, nn = _bin_average_shear(
         shear_u, shear_v, shear_w, izm, z_bins, dz, stdf

@@ -201,6 +201,49 @@ def test_integrate_shear_zero_mean():
     assert np.mean(vr) == pytest.approx(0.0, abs=1e-12)
 
 
+def _noisy_shear_inputs(
+    nbin: int = 10,
+    nens: int = 50,
+    du_dz: float = 1e-3,
+    noise_frac: float = 0.05,
+    bin_spacing: float = 10.0,
+    first_bin_depth: float = 10.0,
+):
+    """Synthetic field with linear shear plus small Gaussian noise (std > 0)."""
+    rng = np.random.default_rng(42)
+    izm = np.outer(
+        np.arange(nbin) * bin_spacing + first_bin_depth,
+        np.ones(nens),
+    )
+    u_clean = izm * du_dz
+    noise = rng.standard_normal(u_clean.shape) * du_dz * noise_frac
+    u = u_clean + noise
+    v = np.zeros_like(u)
+    w = np.zeros_like(u)
+    weight = np.ones((nbin, nens), dtype=np.float64)
+    return u, v, w, izm, weight
+
+
+def test_bin_average_recovers_noisy_shear():
+    """With std>0, 2σ editing path exercised; bin mean should recover du_dz within 3 noise widths."""
+    du_dz = 1e-3
+    noise_frac = 0.05
+    u, v, w, izm, weight = _noisy_shear_inputs(du_dz=du_dz, noise_frac=noise_frac)
+    mask = np.ones_like(u)
+    su, sv, sw = _central_diff_shear(u, v, w, izm, mask)
+    dz = 10.0
+    z_max = np.nanmax(izm)
+    z_bins = np.arange(dz / 2, z_max, dz)
+    usm, _, _, _, _, _, nn = _bin_average_shear(su, sv, sw, izm, z_bins, dz)
+    populated = nn > 2
+    assert populated.sum() > 0, "No bins had more than 2 samples"
+    # Recovered mean should be within 3× the per-estimate noise (generous tolerance)
+    tol = 3 * du_dz * noise_frac
+    assert np.allclose(usm[populated], du_dz, atol=tol), (
+        f"Noisy shear recovery failed: max deviation {np.max(np.abs(usm[populated] - du_dz)):.2e}, tol={tol:.2e}"
+    )
+
+
 def test_integrate_shear_nan_gaps_filled_with_zero():
     """NaN shear bins are treated as zero shear (no contribution to integral)."""
     nz = 6
