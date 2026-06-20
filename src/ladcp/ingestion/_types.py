@@ -1,0 +1,40 @@
+"""RDIData dataclass — result of load_rdi().
+
+Reference: MATLAB 'd' struct in loadrdi.m.
+"""
+
+from dataclasses import dataclass
+
+import numpy as np
+from numpy.typing import NDArray
+
+
+@dataclass
+class RDIData:
+    """Parsed RDI PD0 data for one instrument file (downlooker or uplooker).
+
+    Array shapes use axis convention (bins, ensembles) to match MATLAB loadrdi.m.
+    """
+
+    u: NDArray[np.float64]  # eastward velocity  (nbin, nens) m/s
+    v: NDArray[np.float64]  # northward velocity (nbin, nens) m/s
+    w: NDArray[np.float64]  # vertical velocity  (nbin, nens) m/s
+    e: NDArray[np.float64]  # error velocity     (nbin, nens) m/s
+    heading: NDArray[np.float64]  # degrees            (nens,)
+    pitch: NDArray[np.float64]  # degrees            (nens,)
+    roll: NDArray[np.float64]  # degrees            (nens,)
+    time_julian: NDArray[np.float64]  # Julian days        (nens,)
+    temp_c: NDArray[np.float64]  # Celsius            (nens,)
+    sound_vel_ms: NDArray[np.float64]  # m/s                (nens,)
+    echo: NDArray[np.uint8]  # amplitude          (nbin, nens, 4)
+    corr: NDArray[np.uint8]  # correlation        (nbin, nens, 4)
+    pg: NDArray[np.uint8]  # percent good       (nbin, nens, 4)
+    btrack_range_m: NDArray[np.float64]  # (4, nens)
+    btrack_vel_ms: NDArray[np.float64]  # (4, nens)
+    nbin: int
+    nens: int
+    blen_m: float
+    blnk_m: float
+    dist_m: float
+    npng: int
+    serial: list[int]

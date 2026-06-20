@@ -3,6 +3,7 @@
 import struct
 
 import numpy as np
+import pytest
 
 
 def _make_fixed_leader(
@@ -225,3 +226,46 @@ class TestPd0Parser:
         assert bt["range_m"].shape == (4,)
         assert abs(bt["range_m"][0] - 450.0) < 0.01  # 45000 * 0.01
         assert abs(bt["vel_ms"][0] - (-0.1)) < 1e-4  # -100 * 0.001
+
+
+class TestLoadRdi:
+    def _write_temp_pd0(self, tmp_path, nbin=4, nens=3):
+        """Write a minimal valid PD0 file with nens ensembles."""
+        data = b"".join(_make_minimal_ensemble(nbin=nbin) for _ in range(nens))
+        p = tmp_path / "test.000"
+        p.write_bytes(data)
+        return p
+
+    def test_load_returns_rdi_data(self, tmp_path):
+        from ladcp.ingestion._types import RDIData
+        from ladcp.ingestion.rdi import load_rdi
+
+        path = self._write_temp_pd0(tmp_path, nbin=4, nens=3)
+        result = load_rdi(path)
+        assert isinstance(result, RDIData)
+
+    def test_shape_nbin_nens(self, tmp_path):
+        from ladcp.ingestion.rdi import load_rdi
+
+        path = self._write_temp_pd0(tmp_path, nbin=4, nens=3)
+        d = load_rdi(path)
+        assert d.nbin == 4
+        assert d.nens == 3
+        assert d.u.shape == (4, 3)
+        assert d.heading.shape == (3,)
+
+    def test_bad_file_raises(self, tmp_path):
+        from ladcp.ingestion.rdi import load_rdi
+
+        path = tmp_path / "bad.000"
+        path.write_bytes(b"\x00" * 20)
+        with pytest.raises((ValueError, RuntimeError)):
+            load_rdi(path)
+
+    def test_velocity_units_ms(self, tmp_path):
+        from ladcp.ingestion.rdi import load_rdi
+
+        path = self._write_temp_pd0(tmp_path, nbin=3, nens=2)
+        d = load_rdi(path)
+        # All non-NaN velocities should be < 10 m/s for the synthetic data
+        assert np.nanmax(np.abs(d.u)) < 10.0
