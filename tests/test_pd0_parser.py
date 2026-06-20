@@ -189,8 +189,8 @@ class TestPd0Parser:
         assert abs(vl["roll_deg"] - 2.0) < 0.01  # 200 * 0.01
         assert abs(vl["temp_c"] - 2.0) < 0.01  # 200 * 0.01
         assert abs(vl["sound_vel_ms"] - 1500) < 0.1
-        # Default helper: 2018-11-05 12:00:00 → JD 2458428.0 (noon)
-        assert abs(vl["time_julian"] - 2458428.0) < 1.0
+        # Default helper: 2018-11-05 12:00:00 → JD 2458428.5 (midnight-based, noon)
+        assert abs(vl["time_julian"] - 2458428.5) < 1e-4
 
     def test_velocity_scaling_and_bad_values(self):
         from ladcp.ingestion._pd0 import parse_pd0

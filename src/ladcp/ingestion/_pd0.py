@@ -7,7 +7,6 @@ import struct
 
 import numpy as np
 
-_HEADER_ID = (0x7F, 0x7F)
 _VEL_BAD = -32768
 _VEL_SCALE = 0.001  # int16 LSB → m/s
 _BT_RANGE_SCALE = 0.01  # uint16 LSB → m
@@ -46,7 +45,8 @@ def parse_pd0(data: bytes) -> list[dict]:
         nbytes = struct.unpack_from("<H", data, offset + 2)[0]
         end = offset + nbytes + 2  # +2 for checksum
         if end > n:
-            break
+            offset += 1
+            continue
 
         body = data[offset : offset + nbytes]
         checksum = struct.unpack_from("<H", data, offset + nbytes)[0]
@@ -257,12 +257,18 @@ def _read_bottom_track(body: bytes, start: int) -> dict:
 
 
 def _to_julian(year: int, month: int, day: int, hour_frac: float) -> float:
-    """Convert calendar date to Julian day number (matches julian() in loadrdi.m)."""
-    # Meeus algorithm, matches MATLAB julian()
-    if month <= 2:
-        year -= 1
-        month += 12
-    A = year // 100
-    B = 2 - A + A // 4
-    jd = int(365.25 * (year + 4716)) + int(30.6001 * (month + 1)) + day + B - 1524.5
-    return jd + hour_frac / 24.0
+    """Midnight-based Julian day matching docs/legacy/julian.m (Fliegel/Van Flandern).
+
+    In this convention JD 2440000 began at 0000 hours, May 23, 1968.
+    Unlike the formal astronomical definition (noon-to-noon), this counts
+    from midnight — matching the MATLAB reference and the LDEO processing chain.
+    """
+    mo = month + 9
+    yr = year - 1
+    if month > 2:
+        mo = month - 3
+        yr = year
+    c = yr // 100
+    yr = yr - c * 100
+    j = (146097 * c) // 4 + (1461 * yr) // 4 + (153 * mo + 2) // 5 + day + 1721119
+    return float(j) + hour_frac / 24.0

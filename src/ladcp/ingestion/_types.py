@@ -14,6 +14,11 @@ class RDIData:
     """Parsed RDI PD0 data for one instrument file (downlooker or uplooker).
 
     Array shapes use axis convention (bins, ensembles) to match MATLAB loadrdi.m.
+
+    Coordinate assumption: u/v/w/e are labeled as Earth-frame velocities.
+    This is valid only when the PD0 file was recorded in Earth coordinates
+    (EX command = 11xxx). Beam or instrument coordinate files will have their
+    raw beam velocities stored here without transformation.
     """
 
     u: NDArray[np.float64]  # eastward velocity  (nbin, nens) m/s
