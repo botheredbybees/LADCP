@@ -78,4 +78,4 @@ test_data/           # Validation data (processed outputs + raw PD0 for one crui
 
 ## License
 
-Not yet specified.
+MIT
