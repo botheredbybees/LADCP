@@ -57,7 +57,7 @@ def beam2earth(
     theta_deg: float,
     gimbaled: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Convert 4-beam Janus along-beam velocities to Earth frame (u=East, v=North, w=Up).
+    """Convert 4-beam Janus velocities to Earth frame (u=East, v=North, w=Up).
 
     Implements Appendix A of Dewey & Stringer (2007) as coded in janus2earth.m.
     TRDI convention: positive beam velocity = toward transducer face.
