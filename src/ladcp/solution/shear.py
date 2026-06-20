@@ -95,6 +95,7 @@ def _bin_average_shear(
         ]:
             med = np.median(arr)
             std = np.std(arr)
+            # <= not < so std=0 (constant window) keeps all values rather than rejecting all
             keep = np.abs(arr - med) <= stdf * std
             if keep.sum() > 1:
                 mean_out[k] = np.mean(arr[keep])
@@ -104,6 +105,7 @@ def _bin_average_shear(
         if len(sw) > 2:
             med_w = np.median(sw)
             std_w = np.std(sw)
+            # <= not < so std=0 (constant window) keeps all values rather than rejecting all
             keep_w = np.abs(sw - med_w) <= stdf * std_w
             if keep_w.sum() > 1:
                 wsm[k] = np.mean(sw[keep_w])
