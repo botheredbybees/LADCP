@@ -44,6 +44,74 @@ def _central_diff_shear(
     return shear_u, shear_v, shear_w
 
 
+def _bin_average_shear(
+    shear_u: NDArray,
+    shear_v: NDArray,
+    shear_w: NDArray,
+    izm: NDArray,
+    z_bins: NDArray,
+    dz: float,
+    stdf: float = 2.0,
+) -> tuple[NDArray, NDArray, NDArray, NDArray, NDArray, NDArray, NDArray]:
+    """Average shear estimates into depth bins with 2σ outlier editing.
+
+    For each output bin centred at z_bins[k]:
+      1. Collect all (bin, ensemble) pairs where depth is within dz of z_bins[k]+dz/2.
+      2. Discard NaN estimates.
+      3. If n ≤ 2: leave mean/std as NaN.
+      4. Reject estimates more than stdf*std from the median.
+      5. If ≥ 2 remain: store mean and std.
+
+    Window condition replicates MATLAB: abs(izm - (z + dz/2)) <= dz.
+    """
+    nz = len(z_bins)
+    iz_flat = izm.ravel()
+    su_flat = shear_u.ravel()
+    sv_flat = shear_v.ravel()
+    sw_flat = shear_w.ravel()
+
+    usm = np.full(nz, np.nan)
+    vsm = np.full(nz, np.nan)
+    wsm = np.full(nz, np.nan)
+    use = np.full(nz, np.nan)
+    vse = np.full(nz, np.nan)
+    wse = np.full(nz, np.nan)
+    nn = np.zeros(nz, dtype=np.intp)
+
+    for k, center in enumerate(z_bins):
+        in_window = np.abs(iz_flat - (center + dz / 2)) <= dz
+        finite = in_window & np.isfinite(su_flat + sv_flat)
+        su = su_flat[finite]
+        sv = sv_flat[finite]
+        sw = sw_flat[finite & np.isfinite(sw_flat)]
+        n = len(su)
+        nn[k] = n
+        if n <= 2:
+            continue
+
+        for arr, mean_out, std_out in [
+            (su, usm, use),
+            (sv, vsm, vse),
+        ]:
+            med = np.median(arr)
+            std = np.std(arr)
+            keep = np.abs(arr - med) <= stdf * std
+            if keep.sum() > 1:
+                mean_out[k] = np.mean(arr[keep])
+                std_out[k] = np.std(arr[keep])
+
+        # w may have fewer finite values — filter independently
+        if len(sw) > 2:
+            med_w = np.median(sw)
+            std_w = np.std(sw)
+            keep_w = np.abs(sw - med_w) <= stdf * std_w
+            if keep_w.sum() > 1:
+                wsm[k] = np.mean(sw[keep_w])
+                wse[k] = np.std(sw[keep_w])
+
+    return usm, vsm, wsm, use, vse, wse, nn
+
+
 @dataclass
 class ShearProfile:
     """Depth-binned shear profile and integrated relative velocity.

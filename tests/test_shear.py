@@ -1,7 +1,7 @@
 """Unit tests for shear solution — src/ladcp/solution/shear.py."""
 import numpy as np
 import pytest
-from ladcp.solution.shear import ShearProfile, compute_shear, _central_diff_shear
+from ladcp.solution.shear import ShearProfile, compute_shear, _central_diff_shear, _bin_average_shear
 
 
 def _constant_shear_inputs(
@@ -105,3 +105,69 @@ def test_central_diff_shear_output_shape():
     assert su.shape == (8, 5)
     assert sv.shape == (8, 5)
     assert sw.shape == (8, 5)
+
+
+def test_bin_average_recovers_known_shear():
+    """Constant shear field: bin mean should equal the true shear value."""
+    du_dz = 2e-3
+    u, v, w, izm, weight = _constant_shear_inputs(
+        nbin=10, nens=30, du_dz=du_dz, dv_dz=0.0, dw_dz=0.0,
+        bin_spacing=10.0, first_bin_depth=10.0,
+    )
+    mask = np.ones_like(u)
+    su, sv, sw = _central_diff_shear(u, v, w, izm, mask)
+    dz = 10.0
+    z_max = np.nanmax(izm)
+    z_bins = np.arange(dz / 2, z_max + dz / 2, dz)
+    usm, vsm, wsm, use, vse, wse, nn = _bin_average_shear(su, sv, sw, izm, z_bins, dz)
+    # Interior bins (have enough samples) should recover du_dz
+    populated = nn > 2
+    assert populated.sum() > 0, "No bins had more than 2 samples"
+    assert np.allclose(usm[populated], du_dz, atol=1e-10)
+
+
+def test_bin_average_outlier_rejection():
+    """Inject a single large outlier; after 2σ editing it must not influence the mean."""
+    nbin, nens = 6, 40
+    du_dz = 1e-3
+    u, v, w, izm, weight = _constant_shear_inputs(
+        nbin=nbin, nens=nens, du_dz=du_dz, dv_dz=0.0, dw_dz=0.0,
+        bin_spacing=10.0, first_bin_depth=10.0,
+    )
+    mask = np.ones_like(u)
+    su, sv, sw = _central_diff_shear(u, v, w, izm, mask)
+    # Inject spike in bin 3, first ensemble — 100× larger than normal
+    su[3, 0] = 0.1
+    dz = 10.0
+    z_max = np.nanmax(izm)
+    z_bins = np.arange(dz / 2, z_max + dz / 2, dz)
+    usm, _, _, _, _, _, nn = _bin_average_shear(su, sv, sw, izm, z_bins, dz)
+    populated = nn > 2
+    # After 2σ editing the mean in every bin should still be ≈ du_dz
+    assert np.allclose(usm[populated], du_dz, atol=1e-4)
+
+
+def test_bin_average_few_samples_returns_nan():
+    """Bins with ≤ 2 valid samples return NaN (not enough to estimate std)."""
+    nbin, nens = 4, 2   # only 2 ensembles → ≤ 2 finite shear estimates per bin
+    u, v, w, izm, weight = _constant_shear_inputs(nbin=nbin, nens=nens)
+    mask = np.ones_like(u)
+    su, sv, sw = _central_diff_shear(u, v, w, izm, mask)
+    dz = 10.0
+    z_max = np.nanmax(izm)
+    z_bins = np.arange(dz / 2, z_max + dz / 2, dz)
+    usm, _, _, _, _, _, nn = _bin_average_shear(su, sv, sw, izm, z_bins, dz)
+    assert np.all(np.isnan(usm[nn <= 2]))
+
+
+def test_bin_average_output_shapes():
+    u, v, w, izm, weight = _constant_shear_inputs(nbin=8, nens=20)
+    mask = np.ones_like(u)
+    su, sv, sw = _central_diff_shear(u, v, w, izm, mask)
+    dz = 10.0
+    z_max = np.nanmax(izm)
+    z_bins = np.arange(dz / 2, z_max + dz / 2, dz)
+    usm, vsm, wsm, use, vse, wse, nn = _bin_average_shear(su, sv, sw, izm, z_bins, dz)
+    nz = len(z_bins)
+    for arr in (usm, vsm, wsm, use, vse, wse, nn):
+        assert arr.shape == (nz,)
