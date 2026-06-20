@@ -192,16 +192,72 @@ def _read_sbe_binary(
     return _build_ctd_time_series(arr, col_roles, time_start_julian)
 
 
+def _read_generic_ascii(path: Path, **kwargs) -> CTDTimeSeries:
+    """Read generic fixed-column ASCII CTD file with configurable column layout.
+
+    kwargs:
+        skip_rows: int = 0
+        col_time: int = 0
+        col_pressure: int = 1
+        col_temp: int = 2
+        col_salinity: int | None = None
+        time_base: str = 'elapsed_s'  ('elapsed_s' or 'julian')
+        time_start_julian: float | None = None (required if time_base='elapsed_s')
+    """
+    skip_rows: int = kwargs.get('skip_rows', 0)
+    col_time: int = kwargs.get('col_time', 0)
+    col_pressure: int = kwargs.get('col_pressure', 1)
+    col_temp: int = kwargs.get('col_temp', 2)
+    col_salinity: int | None = kwargs.get('col_salinity', None)
+    time_base: str = kwargs.get('time_base', 'elapsed_s')
+    time_start_julian: float | None = kwargs.get('time_start_julian')
+
+    arr = np.loadtxt(path, skiprows=skip_rows)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+
+    time_raw = arr[:, col_time]
+    pressure = arr[:, col_pressure]
+    n = len(pressure)
+
+    if time_base == 'julian':
+        time_julian = time_raw
+    elif time_base == 'elapsed_s':
+        if time_start_julian is None:
+            raise ValueError("time_base='elapsed_s' requires time_start_julian kwarg")
+        time_julian = time_raw / 86400.0 + time_start_julian
+    else:
+        raise ValueError(f"Unknown time_base: {time_base!r}; expected 'elapsed_s' or 'julian'")
+
+    temp = arr[:, col_temp] if col_temp < arr.shape[1] else np.full(n, np.nan)
+    if col_salinity is not None and col_salinity < arr.shape[1]:
+        salinity = arr[:, col_salinity]
+    else:
+        salinity = np.full(n, np.nan)
+
+    return CTDTimeSeries(
+        time_julian=time_julian,
+        pressure_dbar=pressure,
+        temp_c=temp,
+        salinity=salinity,
+    )
+
+
 def load_ctd(path: Path | str, **kwargs) -> CTDTimeSeries:
     """Load a CTD time-series file; auto-detect SBE binary, SBE ASCII, or generic ASCII."""
     path = Path(path)
-    lines, data_offset = _read_header_lines(path)
-    header_info = _parse_sbe_header(lines)
-    fmt = _detect_format(header_info)
+    try:
+        lines, data_offset = _read_header_lines(path)
+        header_info = _parse_sbe_header(lines)
+        fmt = _detect_format(header_info)
 
-    if fmt == 'binary':
-        return _read_sbe_binary(path, data_offset, header_info, **kwargs)
-    elif fmt == 'sbe_ascii':
-        return _read_sbe_ascii(path, data_offset, header_info, **kwargs)
-    else:
-        raise NotImplementedError("Generic ASCII reader not yet implemented")
+        if fmt == 'binary':
+            return _read_sbe_binary(path, data_offset, header_info, **kwargs)
+        elif fmt == 'sbe_ascii':
+            return _read_sbe_ascii(path, data_offset, header_info, **kwargs)
+        else:
+            return _read_generic_ascii(path, **kwargs)
+    except ValueError as e:
+        if "No *END* marker found" in str(e):
+            return _read_generic_ascii(path, **kwargs)
+        raise

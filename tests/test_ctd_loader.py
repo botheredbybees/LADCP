@@ -95,3 +95,34 @@ def test_format_dispatch_sbe_ascii(tmp_path):
     assert isinstance(result, CTDTimeSeries)
     assert len(result.pressure_dbar) == 2
     assert abs(result.pressure_dbar[1] - 200.0) < 1.0
+
+def test_generic_ascii_elapsed_time(tmp_path):
+    # I7N .1Hz style: elapsed seconds, fixed columns, 3-line header
+    content = (
+        "# station 002\n"
+        "# instrument SBE9\n"
+        "# fields time_s pressure_dbar temp_c salinity\n"
+        "0.0  5.0  20.0  35.0\n"
+        "1.0  10.0  19.5  35.1\n"
+        "2.0  15.0  19.0  35.2\n"
+    )
+    p = tmp_path / "ctd.1hz"
+    p.write_text(content)
+    # Julian day 2451545.0 = 2000-01-01 00:00:00 UTC (J2000 reference)
+    start_julian = 2451545.0
+    result = load_ctd(
+        p,
+        skip_rows=3,
+        col_time=0,
+        col_pressure=1,
+        col_temp=2,
+        col_salinity=3,
+        time_base="elapsed_s",
+        time_start_julian=start_julian,
+    )
+    assert isinstance(result, CTDTimeSeries)
+    assert len(result.pressure_dbar) == 3
+    # time_julian = elapsed_s / 86400 + start_julian
+    assert abs(result.time_julian[1] - (1.0 / 86400.0 + start_julian)) < 1e-9
+    assert abs(result.pressure_dbar[2] - 15.0) < 1.0
+    assert abs(result.salinity[0] - 35.0) < 0.01
