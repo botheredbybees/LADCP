@@ -1,6 +1,15 @@
 import numpy as np
 import pytest
-from ladcp.solution.inverse import EnsembleData, SuperEnsemble, prepare_superensembles
+from ladcp.solution.inverse import (
+    EnsembleData,
+    SuperEnsemble,
+    prepare_superensembles,
+    _flatten_obs,
+    _build_obs_matrix,
+    _build_ctd_matrix,
+    _apply_weights,
+)
+import scipy.sparse
 
 
 def _make_ens(*, n_bins: int = 5, n_ens: int = 40,
@@ -58,3 +67,59 @@ def test_prepare_superensembles_bvel_preserved():
     ens.bvel[:] = [0.1, -0.2, -1.0]
     se = prepare_superensembles(ens, dz=20.0)
     assert np.allclose(np.nanmean(se.bvel[0]), 0.1, atol=0.02)
+
+
+def test_build_obs_matrix_shape():
+    """obs matrix rows = n_obs, cols = number of unique depth bins."""
+    izv = np.array([10.0, 20.0, 30.0, 10.0])  # 3 unique bins
+    A = _build_obs_matrix(izv, dz=10.0)
+    assert A.shape == (4, 3)
+
+
+def test_build_obs_matrix_one_nonzero_per_row():
+    """Each observation maps to exactly one depth bin."""
+    izv = np.array([5.0, 15.0, 25.0, 35.0])
+    A = _build_obs_matrix(izv, dz=10.0)
+    assert np.allclose(np.asarray(A.sum(axis=1)).ravel(), 1.0)
+
+
+def test_build_ctd_matrix_shape():
+    """ctd matrix rows = n_obs, cols = n_se."""
+    jprof = np.array([0, 0, 1, 1, 2, 2], dtype=int)
+    A = _build_ctd_matrix(jprof, n_se=3)
+    assert A.shape == (6, 3)
+    assert np.allclose(np.asarray(A.sum(axis=1)).ravel(), 1.0)
+
+
+def test_flatten_obs_removes_nan_weight():
+    """Observations with NaN or zero weight must be excluded."""
+    ens = _make_ens(n_bins=3, n_ens=20)
+    se = prepare_superensembles(ens, dz=10.0)
+    # Force some NaN weights
+    se.weight[:, :2] = np.nan
+    d_u, d_v, izv, jprof, wm = _flatten_obs(se, velerr=0.05, weightmin=0.05)
+    assert np.all(np.isfinite(d_u))
+    assert np.all(np.isfinite(wm))
+    assert np.all(wm >= 0.05)
+
+
+def test_apply_weights_scales_rows():
+    """_apply_weights must scale each row of A and d by the observation weight."""
+    # Simple 4-observation system: 3 depth bins, 2 super-ensembles
+    izv = np.array([10.0, 20.0, 30.0, 20.0])
+    jprof = np.array([0, 0, 1, 1], dtype=int)
+    A_ocean = _build_obs_matrix(izv, dz=10.0)
+    A_ctd = _build_ctd_matrix(jprof, n_se=2)
+    d = np.array([0.1, 0.2, 0.3, 0.4])
+    wm = np.array([1.0, 2.0, 0.5, 3.0])
+
+    A_o, A_c, d_w, idx_down, idx_up = _apply_weights(A_ocean, A_ctd, d, wm)
+
+    # Row k of A_o == row k of A_ocean * wm[k]
+    for k in range(4):
+        assert np.allclose(A_o[k], np.asarray(A_ocean[k].todense()).ravel() * wm[k])
+    assert np.allclose(d_w, d * wm)
+
+    # idx_down and idx_up together cover all row indices
+    all_covered = np.union1d(idx_down, idx_up)
+    assert set(all_covered) == set(range(len(d)))

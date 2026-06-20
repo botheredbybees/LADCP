@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 from dataclasses import dataclass
+from scipy.sparse import csr_matrix
 
 
 @dataclass
@@ -196,3 +197,115 @@ def prepare_superensembles(
         slat=slat_se, slon=slon_se,
         izd=ens.izd, izu=ens.izu,
     )
+
+
+def _flatten_obs(
+    se: SuperEnsemble,
+    velerr: float = 0.05,
+    weightmin: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Flatten super-ensemble data into observation vectors for matrix construction.
+
+    Column-major (Fortran) order matches MATLAB reshape(x, nbin*nt, 1).
+
+    Returns
+    -------
+    d_u, d_v : (n_obs,) observed velocities m/s
+    izv      : (n_obs,) positive bin depths m  (= -izm, column-major flattened)
+    jprof    : (n_obs,) super-ensemble index 0..n_se-1
+    wm       : (n_obs,) data weights (velerr / ruvs, NaN-propagated)
+    """
+    n_bins, n_se = se.izm.shape
+
+    # Observation depth: positive (izv = -izm), column-major flatten
+    izv_full = (-se.izm).ravel(order="F")   # (n_bins * n_se,)
+
+    # Profile index per observation: ensemble 0 repeated n_bins times, etc.
+    jprof_full = np.repeat(np.arange(n_se), n_bins)
+
+    d_u_full = se.ru.ravel(order="F")
+    d_v_full = se.rv.ravel(order="F")
+
+    # Data weight: velerr / std  (std-based weighting, MATLAB std_weight=1)
+    # NaN in weight propagates to wm, excluding those observations
+    wm_full = velerr / se.ruvs + se.weight * 0  # NaN-propagate from weight
+    wm_full = wm_full.ravel(order="F")
+
+    # Keep only valid, well-weighted observations
+    valid = (
+        np.isfinite(d_u_full)
+        & np.isfinite(d_v_full)
+        & np.isfinite(wm_full)
+        & (wm_full >= weightmin)
+        & (izv_full > 0)
+    )
+
+    return (
+        d_u_full[valid],
+        d_v_full[valid],
+        izv_full[valid],
+        jprof_full[valid],
+        wm_full[valid],
+    )
+
+
+def _build_obs_matrix(izv: np.ndarray, dz: float) -> csr_matrix:
+    """Build A_ocean: maps each observation to a depth bin.
+
+    Column j = round(izv[k] / dz) - 1 (0-indexed).
+    Replicates lainseta(izv, dz) from getinv.m.
+    """
+    n_obs = len(izv)
+    j = np.round(izv / dz).astype(int) - 1  # 0-indexed depth bin
+    j = np.clip(j, 0, None)
+    n_zbins = int(j.max()) + 1
+    i = np.arange(n_obs)
+    return csr_matrix((np.ones(n_obs), (i, j)), shape=(n_obs, n_zbins))
+
+
+def _build_ctd_matrix(jprof: np.ndarray, n_se: int) -> csr_matrix:
+    """Build A_ctd: maps each observation to its super-ensemble (time bin).
+
+    Replicates lainseta(jprof, 1) from getinv.m.
+    """
+    n_obs = len(jprof)
+    i = np.arange(n_obs)
+    j = jprof.astype(int)
+    return csr_matrix((np.ones(n_obs), (i, j)), shape=(n_obs, n_se))
+
+
+def _apply_weights(
+    A_ocean: csr_matrix,
+    A_ctd: csr_matrix,
+    d: np.ndarray,
+    wm: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Apply data weights to observation system; return dense arrays + split indices.
+
+    Replicates lainweig() from getinv.m. Returns dense arrays (not sparse) because
+    constraints are appended row-by-row in subsequent tasks.
+
+    Returns
+    -------
+    A_o, A_c : dense float64 arrays with weights applied
+    d_w      : weighted observation vector
+    idx_down : row indices belonging to the downcast
+    idx_up   : row indices belonging to the upcast
+    """
+    A_o = A_ocean.toarray() * wm[:, np.newaxis]
+    A_c = A_ctd.toarray() * wm[:, np.newaxis]
+    d_w = d * wm
+
+    # Split down/up cast at the deepest observation depth.
+    # The last column of A_ocean is always the deepest depth bin (n_zbins - 1)
+    # because _build_obs_matrix sets n_zbins = j.max() + 1.
+    deepest_col = A_ocean.shape[1] - 1
+    rows_at_bottom = np.where(A_ocean.getcol(deepest_col).toarray().ravel() > 0)[0]
+    if len(rows_at_bottom) > 0:
+        split = int(np.median(rows_at_bottom))
+    else:
+        split = len(d) // 2
+    idx_down = np.arange(0, split + 1)
+    idx_up = np.arange(split, len(d))
+
+    return A_o, A_c, d_w, idx_down, idx_up
