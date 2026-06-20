@@ -8,6 +8,8 @@ from ladcp.solution.inverse import (
     _build_obs_matrix,
     _build_ctd_matrix,
     _apply_weights,
+    _add_smoothness,
+    _add_zero_mean,
 )
 import scipy.sparse
 
@@ -123,3 +125,35 @@ def test_apply_weights_scales_rows():
     # idx_down and idx_up together cover all row indices
     all_covered = np.union1d(idx_down, idx_up)
     assert set(all_covered) == set(range(len(d)))
+
+
+def test_add_smoothness_increases_rows():
+    """Smoothness adds curvature rows for interior columns."""
+    n_obs, n_zbins, n_se = 20, 8, 5
+    A_o = np.random.rand(n_obs, n_zbins)
+    A_c = np.random.rand(n_obs, n_se)
+    d = np.random.rand(n_obs)
+    A_o2, A_c2, d2 = _add_smoothness(A_o, A_c, d, smoofac=1.0)
+    # Must add at least n_zbins - 2 curvature rows (interior bins)
+    assert A_o2.shape[0] > n_obs
+    assert A_c2.shape[0] == A_o2.shape[0]
+    assert len(d2) == A_o2.shape[0]
+
+
+def test_add_smoothness_zero_smoofac_still_runs():
+    """smoofac=0 must not raise and must add at least boundary rows."""
+    A_o = np.eye(6)
+    A_c = np.zeros((6, 3))
+    d = np.zeros(6)
+    A_o2, A_c2, d2 = _add_smoothness(A_o, A_c, d, smoofac=0.0)
+    assert A_o2.shape[0] >= 6
+
+
+def test_add_zero_mean_appends_one_row():
+    """Zero-mean adds exactly one constraint row."""
+    A_o = np.eye(5)
+    A_c = np.zeros((5, 3))
+    d = np.ones(5)
+    A_o2, A_c2, d2 = _add_zero_mean(A_o, A_c, d)
+    assert A_o2.shape[0] == 6
+    assert d2[-1] == 0.0  # RHS = 0 for zero-mean

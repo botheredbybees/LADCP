@@ -309,3 +309,87 @@ def _apply_weights(
     idx_up = np.arange(split, len(d))
 
     return A_o, A_c, d_w, idx_down, idx_up
+
+
+def _add_smoothness(
+    A_ocean: np.ndarray,
+    A_ctd: np.ndarray,
+    d: np.ndarray,
+    smoofac: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Append curvature-penalty rows to the ocean-velocity block (lainsmoo).
+
+    For each interior column j (1..n_cols-2), adds one row with stencil
+    [-1, 2, -1] scaled by smoofac * (median_norm / col_norm[j]).
+    Also smooths the CTD block symmetrically (MATLAB calls lainsmoo twice).
+    Boundary columns get first-derivative (slope) rows: [2,-2] and [-2,2].
+    """
+    def _smoo_one(A_target: np.ndarray, A_other: np.ndarray,
+                  d_in: np.ndarray, fs0: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        n_rows, n_cols = A_target.shape
+        col_norms = np.sqrt(np.abs(A_target).sum(axis=0))
+        pos = col_norms > 0
+        if not pos.any():
+            return A_target, A_other, d_in
+        median_norm = max(float(np.median(col_norms[pos])), 0.01)
+        clipped = np.maximum(col_norms, median_norm * 0.1)
+        fs = (median_norm / clipped) * fs0
+
+        # Interior: curvature stencil [-1, 2, -1]
+        cur = np.array([-1.0, 2.0, -1.0])
+        smoo_rows_t, smoo_rows_o = [], []
+        for j in range(1, n_cols - 1):
+            if fs[j] > 0:
+                row = np.zeros(n_cols)
+                row[j - 1 : j + 2] = cur * fs[j]
+                smoo_rows_t.append(row)
+                smoo_rows_o.append(np.zeros(A_other.shape[1]))
+
+        # Boundaries: slope constraint [2,-2] / [-2,2]
+        if fs[0] > 0:
+            row = np.zeros(n_cols)
+            row[0:2] = np.array([2.0, -2.0]) * fs[0]
+            smoo_rows_t.append(row)
+            smoo_rows_o.append(np.zeros(A_other.shape[1]))
+        if fs[-1] > 0:
+            row = np.zeros(n_cols)
+            row[-2:] = np.array([-2.0, 2.0]) * fs[-1]
+            smoo_rows_t.append(row)
+            smoo_rows_o.append(np.zeros(A_other.shape[1]))
+
+        if not smoo_rows_t:
+            return A_target, A_other, d_in
+
+        block_t = np.array(smoo_rows_t)
+        block_o = np.array(smoo_rows_o)
+        return (
+            np.vstack([A_target, block_t]),
+            np.vstack([A_other, block_o]),
+            np.concatenate([d_in, np.zeros(len(smoo_rows_t))]),
+        )
+
+    # Smooth ocean velocity, then CTD velocity (MATLAB calls lainsmoo twice)
+    A_ocean, A_ctd, d = _smoo_one(A_ocean, A_ctd, d, smoofac)
+    A_ctd, A_ocean, d = _smoo_one(A_ctd, A_ocean, d, smoofac)
+    return A_ocean, A_ctd, d
+
+
+def _add_zero_mean(
+    A_ocean: np.ndarray,
+    A_ctd: np.ndarray,
+    d: np.ndarray,
+    weight: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Constrain mean(u_ocean) = 0 when no external velocity reference (lainocean).
+
+    Appends one row: sum(A_ocean columns) * weight / n_zbins = 0.
+    """
+    n_zbins = A_ocean.shape[1]
+    scale = float(np.mean(np.abs(A_ocean).sum(axis=0)))
+    row_o = np.ones(n_zbins) * weight * scale / n_zbins
+    row_c = np.zeros(A_ctd.shape[1])
+    return (
+        np.vstack([A_ocean, row_o[np.newaxis, :]]),
+        np.vstack([A_ctd, row_c[np.newaxis, :]]),
+        np.concatenate([d, [0.0]]),
+    )
