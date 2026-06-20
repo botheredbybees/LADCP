@@ -91,11 +91,12 @@ def prepare_superensembles(
     ens:
         Earth-frame ADCP data from beam2earth + assign_bin_depths.
     dz:
-        Depth window size m. Defaults to ``median(|diff(izm[0, :])|)``,
-        matching MATLAB's ``medianan(abs(diff(d.izm(:,1))))``.
+        Depth window size m. Defaults to ``median(|diff(izm[:, 0])|)``
+        (all bins of the first ensemble), matching MATLAB's
+        ``medianan(abs(diff(d.izm(:,1))))``.
     """
     if dz is None:
-        dz = float(np.nanmedian(np.abs(np.diff(ens.izm[0]))))
+        dz = float(np.nanmedian(np.abs(np.diff(ens.izm[:, 0]))))
 
     # Reference bins: 2nd and 3rd downlooker bins (0-indexed: offset 1, 2 from min(izd))
     # Replicates: izr = [min(d.izd)+1, min(d.izd)+2]  (MATLAB 1-indexed → same offsets)
@@ -148,9 +149,12 @@ def prepare_superensembles(
         rw[:, im] = np.nanmedian(w_win, axis=1)
 
         # Velocity uncertainty: combined U+V std over window
+        # Fix I-4: single-sample window — use ddof=0 to return 0 not NaN (matches stdnan())
+        n_win = len(i1)
+        ddof = 1 if n_win > 1 else 0
         ruvs[:, im] = np.sqrt(
-            np.nanstd(u_win, axis=1, ddof=1) ** 2
-            + np.nanstd(v_win, axis=1, ddof=1) ** 2
+            np.nanstd(u_win, axis=1, ddof=ddof) ** 2
+            + np.nanstd(v_win, axis=1, ddof=ddof) ** 2
         )
 
         weight_se[:, im] = np.nanmean(ens.weight[:, i1], axis=1)
@@ -159,14 +163,23 @@ def prepare_superensembles(
         time_se[im] = np.nanmean(ens.time_jul[i1])
 
         bvel_se[:, im] = np.nanmean(ens.bvel[i1], axis=0)
-        bvels_se[:, im] = np.nanstd(ens.bvel[i1], axis=0, ddof=1)
+        # Fix I-3: detrend w-component by reference vertical velocity before computing std
+        # Replicates prepinv.m lines 565-568: bvel(:,3) = bvel(:,3) - wr(1,:)'
+        bvel_win = ens.bvel[i1].copy()
+        wr_ref = float(np.nanmean(rw[:, im]))
+        bvel_win[:, 2] = bvel_win[:, 2] - wr_ref
+        bvels_se[:, im] = np.nanstd(bvel_win, axis=0, ddof=1)
         hbot_se[im] = np.nanmean(ens.hbot[i1])
         slat_se[im] = np.nanmedian(ens.slat[i1])
         slon_se[im] = np.nanmedian(ens.slon[i1])
 
     # Time interval between super-ensembles (seconds); mirror edge values
+    # Fix M-1: guard against n_se==1 where dt_mid is empty
     dt_mid = np.diff(time_se) * 24.0 * 3600.0
-    dt = np.concatenate([[dt_mid[0]], (dt_mid[:-1] + dt_mid[1:]) / 2.0, [dt_mid[-1]]])
+    if len(dt_mid) == 0:
+        dt = np.zeros(1)
+    else:
+        dt = np.concatenate([[dt_mid[0]], (dt_mid[:-1] + dt_mid[1:]) / 2.0, [dt_mid[-1]]])
 
     # Floor std at single_ping_err (≈0.01 m/s); propagate NaN from weight
     # Replicates prepinv.m's superens_std_min logic

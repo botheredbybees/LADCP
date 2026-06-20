@@ -44,11 +44,11 @@ def test_prepare_superensembles_preserves_mean_velocity():
 
 
 def test_prepare_superensembles_default_dz():
-    """Default dz (inferred from izm spacing) must give the same shape as explicit dz."""
+    """Default dz (inferred from izm[:, 0] bin spacing) must give the same shape as explicit dz."""
     ens = _make_ens(n_ens=40)
     se_default = prepare_superensembles(ens)
-    # default dz = median(|diff(izm[0])|) ≈ 5 m
-    se_explicit = prepare_superensembles(ens, dz=5.0)
+    # default dz = median(|diff(izm[:, 0])|) = 8.0 m (bin spacing in _make_ens)
+    se_explicit = prepare_superensembles(ens, dz=8.0)
     assert se_default.ru.shape == se_explicit.ru.shape
 
 
