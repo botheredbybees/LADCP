@@ -37,3 +37,42 @@ def test_column_name_mapping_time_julian():
 def test_column_name_mapping_temperature():
     assert _map_column('t090C') == 'temp'
     assert _map_column('t190C') == 'temp'
+
+
+import numpy as np
+from pathlib import Path
+from ladcp.ingestion.ctd import load_ctd
+
+def _make_binary_cnv(tmp_path: Path, data: np.ndarray, bad_flag: float = -9.990e-29) -> Path:
+    nquan = data.shape[1]
+    header = (
+        f"# nquan = {nquan}\n"
+        "# name 0 = prDM: Pressure [db]\n"
+        "# name 1 = t090C: Temperature\n"
+        "# name 2 = sal00: Salinity\n"
+        "# name 3 = timeJ: Julian Days\n"
+        f"# bad_flag = {bad_flag}\n"
+        "# file_type = binary\n"
+        "*END*\n"
+    ).encode()
+    p = tmp_path / "test.cnv"
+    p.write_bytes(header + data.astype('<f4').tobytes())
+    return p
+
+def test_bad_flag_masked_to_nan(tmp_path):
+    BAD = -9.990e-29
+    data = np.array([[100.0, BAD, 35.0, 2451545.0]], dtype=np.float64)
+    p = _make_binary_cnv(tmp_path, data, bad_flag=BAD)
+    result = load_ctd(p)
+    assert np.isnan(result.temp_c[0])
+    assert not np.isnan(result.pressure_dbar[0])
+
+def test_format_dispatch_binary_flag(tmp_path):
+    data = np.array([[100.0, 15.0, 35.0, 2451545.0],
+                     [200.0, 10.0, 35.5, 2451545.1]], dtype=np.float64)
+    p = _make_binary_cnv(tmp_path, data)
+    result = load_ctd(p)
+    assert isinstance(result, CTDTimeSeries)
+    assert len(result.pressure_dbar) == 2
+    assert abs(result.pressure_dbar[0] - 100.0) < 1.0
+    assert abs(result.pressure_dbar[1] - 200.0) < 1.0
