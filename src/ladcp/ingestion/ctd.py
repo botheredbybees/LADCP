@@ -10,7 +10,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ladcp.ingestion._pd0 import _to_julian
-from ladcp.ingestion._types import RDIData
 
 
 @dataclass
@@ -90,6 +89,6 @@ def _map_column(name: str) -> str | None:
 
 
 def _parse_start_time(date_str: str) -> float:
-    dt = datetime.strptime(date_str.strip(), '%b %d %Y %H:%M:%S')
+    dt = datetime.strptime(date_str.strip()[:20], '%b %d %Y %H:%M:%S')
     frac_hour = dt.hour + dt.minute / 60.0 + dt.second / 3600.0
     return _to_julian(dt.year, dt.month, dt.day, frac_hour)
