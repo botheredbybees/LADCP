@@ -49,7 +49,6 @@ def test_stubs_raise_not_implemented():
     import numpy as np
 
     from ladcp.qa.diagnostics import tilt_heading_plot
-    from ladcp.solution.shear import shear_solution
     from ladcp.transforms.beam2earth import janus5beam2earth
 
     dummy = np.zeros((10, 8))
@@ -57,9 +56,6 @@ def test_stubs_raise_not_implemented():
 
     with pytest.raises(NotImplementedError):
         janus5beam2earth(dummy_1d, dummy_1d, dummy_1d, 20.0, dummy, dummy, dummy, dummy)
-
-    with pytest.raises(NotImplementedError):
-        shear_solution(dummy, dummy, dummy_1d)
 
     with pytest.raises(NotImplementedError):
         tilt_heading_plot({}, Path("out.pdf"))
