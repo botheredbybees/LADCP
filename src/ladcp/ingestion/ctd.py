@@ -142,6 +142,27 @@ def _build_ctd_time_series(
     )
 
 
+def _read_sbe_ascii(
+    path: Path, data_offset: int, header_info: dict, **kwargs
+) -> CTDTimeSeries:
+    nquan = header_info['nquan']
+    if nquan is None:
+        raise ValueError(f"# nquan not found in header of {path}")
+    col_roles = {i: _map_column(name) for i, name in header_info['columns'].items()}
+    bad_flag = header_info['bad_flag']
+    time_start_julian: float | None = (
+        header_info.get('start_time_julian') or kwargs.get('time_start_julian')
+    )
+
+    arr = np.loadtxt(path, skiprows=0, comments=['*', '#']).reshape(-1, nquan)
+    arr = arr.astype(np.float64)
+    if bad_flag is not None:
+        mask = np.isclose(arr, bad_flag, rtol=1e-3, atol=0)
+        arr[mask] = np.nan
+
+    return _build_ctd_time_series(arr, col_roles, time_start_julian)
+
+
 def _read_sbe_binary(
     path: Path, data_offset: int, header_info: dict, **kwargs
 ) -> CTDTimeSeries:
@@ -181,6 +202,6 @@ def load_ctd(path: Path | str, **kwargs) -> CTDTimeSeries:
     if fmt == 'binary':
         return _read_sbe_binary(path, data_offset, header_info, **kwargs)
     elif fmt == 'sbe_ascii':
-        raise NotImplementedError("SBE ASCII reader not yet implemented")
+        return _read_sbe_ascii(path, data_offset, header_info, **kwargs)
     else:
         raise NotImplementedError("Generic ASCII reader not yet implemented")

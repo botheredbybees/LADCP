@@ -76,3 +76,22 @@ def test_format_dispatch_binary_flag(tmp_path):
     assert len(result.pressure_dbar) == 2
     assert abs(result.pressure_dbar[0] - 100.0) < 1.0
     assert abs(result.pressure_dbar[1] - 200.0) < 1.0
+
+def test_format_dispatch_sbe_ascii(tmp_path):
+    content = (
+        "# nquan = 4\n"
+        "# name 0 = prDM: Pressure [db]\n"
+        "# name 1 = t090C: Temperature\n"
+        "# name 2 = sal00: Salinity\n"
+        "# name 3 = timeJ: Julian Days\n"
+        "# bad_flag = -9.990e-29\n"
+        "*END*\n"
+        "100.000  15.000  35.000  2451545.000\n"
+        "200.000  10.000  35.500  2451545.100\n"
+    )
+    p = tmp_path / "ascii_sbe.cnv"
+    p.write_text(content)
+    result = load_ctd(p)
+    assert isinstance(result, CTDTimeSeries)
+    assert len(result.pressure_dbar) == 2
+    assert abs(result.pressure_dbar[1] - 200.0) < 1.0
