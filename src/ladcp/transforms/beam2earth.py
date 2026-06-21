@@ -116,6 +116,34 @@ def beam2earth(
     return u, v, w
 
 
+def uvrot(
+    u: np.ndarray,
+    v: np.ndarray,
+    drot_deg: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rotate velocity vectors counterclockwise by drot_deg degrees.
+
+    Equivalent to MATLAB's uvrot(u, v, ang): applies R(drot) = [cos -sin; sin cos]
+    to each (u, v) pair.  Used to convert magnetic-North-referenced velocities to
+    true-North: pass drot_deg = +magnetic_declination_east.
+
+    Parameters
+    ----------
+    u, v : ndarray
+        East and North velocity components (any shape, must broadcast).
+    drot_deg : float
+        Rotation angle in degrees, positive = counterclockwise (East declination positive).
+
+    Returns
+    -------
+    u_rot, v_rot : ndarray
+        Rotated East and North components, same shape as inputs.
+    """
+    cr = np.cos(np.radians(drot_deg))
+    sr = np.sin(np.radians(drot_deg))
+    return u * cr - v * sr, u * sr + v * cr
+
+
 def janus5beam2earth(
     heading: NDArray,
     pitch: NDArray,

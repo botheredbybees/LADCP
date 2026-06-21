@@ -20,10 +20,11 @@ import pytest
 from ladcp.ingestion.ctd import assign_bin_depths, load_ctd
 from ladcp.ingestion.rdi import load_rdi
 from ladcp.solution.inverse import EnsembleData, InverseResult, compute_inverse, prepare_superensembles
-from ladcp.transforms.beam2earth import beam2earth
+from ladcp.transforms.beam2earth import beam2earth, uvrot
 from ladcp.qa.editing import edit_sidelobes
 
 THETA_DEG = 20.0  # RDI Workhorse 300 kHz beam angle
+DROT_DEG = 12.318441  # magnetic declination East (NOAA WMM, P16N 2015 station)
 
 
 @pytest.fixture(scope="module")
@@ -77,6 +78,10 @@ def inverse_result(dl_path: Path, cnv_path: Path, test_data_dir: Path) -> Invers
         THETA_DEG,
         gimbaled=True,
     )
+    # Rotate from magnetic North to true North.  Our uvrot is CCW-positive, but
+    # East magnetic declination is a CW heading shift, so we pass -DROT_DEG.
+    # Equivalent to MATLAB's uvrot(u, v, +drot) which uses CW-positive convention.
+    u_earth, v_earth = uvrot(u_earth, v_earth, -DROT_DEG)
 
     # assign_bin_depths returns positive-down z_m (nens,) and izm (nbin, nens).
     z_m, izm_pos = assign_bin_depths(rdi, ctd, looker="down")
@@ -101,6 +106,7 @@ def inverse_result(dl_path: Path, cnv_path: Path, test_data_dir: Path) -> Invers
         THETA_DEG,
         gimbaled=True,
     )
+    bt_u_e, bt_v_e = uvrot(bt_u_e, bt_v_e, -DROT_DEG)
     bvel = np.stack([bt_u_e, bt_v_e, bt_w_e], axis=1)  # (nens, 3) Earth frame
     bvels = np.full_like(bvel, 0.02)                      # 2 cm/s nominal std
     hbot = np.nanmean(rdi.btrack_range_m, axis=0)  # (nens,) mean of 4-beam ranges

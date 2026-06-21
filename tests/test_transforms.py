@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ladcp.transforms.beam2earth import beam2earth, beam2xyz
+from ladcp.transforms.beam2earth import beam2earth, beam2xyz, uvrot
 
 THETA = 20.0  # RDI Workhorse 300 kHz
 
@@ -160,3 +160,55 @@ class TestBeam2earth:
         assert np.all(np.isnan(u))
         assert np.all(np.isnan(v))
         assert np.all(np.isnan(w))
+
+
+class TestUvrot:
+    def test_zero_rotation_is_identity(self):
+        u = np.array([1.0, 0.0, -0.5])
+        v = np.array([0.0, 1.0,  0.3])
+        ur, vr = uvrot(u, v, 0.0)
+        np.testing.assert_allclose(ur, u, atol=1e-14)
+        np.testing.assert_allclose(vr, v, atol=1e-14)
+
+    def test_90_ccw_rotates_east_to_north(self):
+        """Unit East vector (1, 0) rotated 90° CCW becomes North (0, 1)."""
+        ur, vr = uvrot(np.array([1.0]), np.array([0.0]), 90.0)
+        assert abs(float(ur[0])) < 1e-14
+        assert abs(float(vr[0]) - 1.0) < 1e-14
+
+    def test_180_rotates_east_to_west(self):
+        ur, vr = uvrot(np.array([1.0]), np.array([0.0]), 180.0)
+        assert abs(float(ur[0]) + 1.0) < 1e-14
+        assert abs(float(vr[0])) < 1e-14
+
+    def test_negative_90_cw(self):
+        """Negative angle rotates clockwise: (1, 0) → (0, -1)."""
+        ur, vr = uvrot(np.array([1.0]), np.array([0.0]), -90.0)
+        assert abs(float(ur[0])) < 1e-14
+        assert abs(float(vr[0]) + 1.0) < 1e-14
+
+    def test_preserves_magnitude(self):
+        """Rotation must not change vector magnitude."""
+        rng = np.random.default_rng(99)
+        u = rng.standard_normal(100)
+        v = rng.standard_normal(100)
+        ur, vr = uvrot(u, v, 17.5)
+        mag_before = np.sqrt(u**2 + v**2)
+        mag_after = np.sqrt(ur**2 + vr**2)
+        np.testing.assert_allclose(mag_after, mag_before, rtol=1e-12)
+
+    def test_nan_propagates(self):
+        u = np.array([1.0, np.nan, 0.5])
+        v = np.array([0.0, 1.0,   0.5])
+        ur, vr = uvrot(u, v, 12.3)
+        assert np.isnan(ur[1])
+        assert np.isnan(vr[1])
+        assert np.isfinite(ur[0])
+        assert np.isfinite(ur[2])
+
+    def test_2d_array_shape_preserved(self):
+        u = np.ones((5, 10))
+        v = np.zeros((5, 10))
+        ur, vr = uvrot(u, v, 45.0)
+        assert ur.shape == (5, 10)
+        assert vr.shape == (5, 10)
