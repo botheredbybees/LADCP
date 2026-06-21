@@ -21,6 +21,7 @@ from ladcp.ingestion.ctd import assign_bin_depths, load_ctd
 from ladcp.ingestion.rdi import load_rdi
 from ladcp.solution.inverse import EnsembleData, InverseResult, compute_inverse, prepare_superensembles
 from ladcp.transforms.beam2earth import beam2earth
+from ladcp.qa.editing import edit_sidelobes
 
 THETA_DEG = 20.0  # RDI Workhorse 300 kHz beam angle
 
@@ -85,14 +86,21 @@ def inverse_result(dl_path: Path, cnv_path: Path) -> InverseResult:
     # Correlation-based weight: mean over 4 beams, normalised to 0–1.
     weight = np.nanmean(rdi.corr.astype(np.float64), axis=2) / 128.0
 
-    # Bottom-track velocity in Earth frame (approximate: using raw beam-frame data
-    # directly here since no beam→earth transform is applied to BT; bvels held fixed
-    # at 2 cm/s nominal).  btrack_vel_ms is (4, nens), already in m/s.
-    bt_u = rdi.btrack_vel_ms[0]  # beam 1 ≈ East proxy
-    bt_v = rdi.btrack_vel_ms[1]  # beam 2 ≈ North proxy
-    bt_w = rdi.btrack_vel_ms[2]  # beam 3 ≈ vertical proxy
-    bvel = np.stack([bt_u, bt_v, bt_w], axis=1)    # (nens, 3)
-    bvels = np.full_like(bvel, 0.02)                # 2 cm/s nominal std
+    # Bottom-track velocity in Earth frame.  btrack_vel_ms is (4, nens) beam-frame;
+    # apply the same beam→earth rotation used for water-track data.
+    bt_u_e, bt_v_e, bt_w_e = beam2earth(
+        rdi.btrack_vel_ms[0],
+        rdi.btrack_vel_ms[1],
+        rdi.btrack_vel_ms[2],
+        rdi.btrack_vel_ms[3],
+        rdi.heading,
+        rdi.pitch,
+        rdi.roll,
+        THETA_DEG,
+        gimbaled=True,
+    )
+    bvel = np.stack([bt_u_e, bt_v_e, bt_w_e], axis=1)  # (nens, 3) Earth frame
+    bvels = np.full_like(bvel, 0.02)                      # 2 cm/s nominal std
     hbot = np.nanmean(rdi.btrack_range_m, axis=0)  # (nens,) mean of 4-beam ranges
 
     ens = EnsembleData(
@@ -111,6 +119,8 @@ def inverse_result(dl_path: Path, cnv_path: Path) -> InverseResult:
         slat=np.full(rdi.nens, np.nan),
         slon=np.full(rdi.nens, np.nan),
     )
+
+    ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
 
     se = prepare_superensembles(ens, dz=16.0)
     return compute_inverse(se)
@@ -146,7 +156,7 @@ def test_inverse_depth_range(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=False, reason="Pipeline gaps: missing BT beam→earth rotation, no QC, no GPS/SADCP constraint; remove once pipeline complete")
+@pytest.mark.xfail(strict=False, reason="Pipeline gap: no GPS/SADCP constraint; remove once pipeline complete")
 def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
     """RMS error in u vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
     ds = netCDF4.Dataset(ref_path)
@@ -169,7 +179,7 @@ def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=False, reason="Pipeline gaps: missing BT beam→earth rotation, no QC, no GPS/SADCP constraint; remove once pipeline complete")
+@pytest.mark.xfail(strict=False, reason="Pipeline gap: no GPS/SADCP constraint; remove once pipeline complete")
 def test_inverse_v_rmse(inverse_result: InverseResult, ref_path: Path):
     """RMS error in v vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
     ds = netCDF4.Dataset(ref_path)
