@@ -149,6 +149,15 @@ def test_add_smoothness_zero_smoofac_still_runs():
     assert A_o2.shape[0] >= 6
 
 
+def test_add_smoothness_two_column_matrix():
+    """Boundary stencil must not crash with minimum viable 2-column matrix."""
+    A_o = np.eye(2)
+    A_c = np.zeros((2, 2))
+    d = np.zeros(2)
+    A_o2, A_c2, d2 = _add_smoothness(A_o, A_c, d, smoofac=1.0)
+    assert A_o2.shape[0] >= 2
+
+
 def test_add_zero_mean_appends_one_row():
     """Zero-mean adds exactly one constraint row."""
     A_o = np.eye(5)

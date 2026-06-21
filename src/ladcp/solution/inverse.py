@@ -346,16 +346,17 @@ def _add_smoothness(
                 smoo_rows_o.append(np.zeros(A_other.shape[1]))
 
         # Boundaries: slope constraint [2,-2] / [-2,2]
-        if fs[0] > 0:
-            row = np.zeros(n_cols)
-            row[0:2] = np.array([2.0, -2.0]) * fs[0]
-            smoo_rows_t.append(row)
-            smoo_rows_o.append(np.zeros(A_other.shape[1]))
-        if fs[-1] > 0:
-            row = np.zeros(n_cols)
-            row[-2:] = np.array([-2.0, 2.0]) * fs[-1]
-            smoo_rows_t.append(row)
-            smoo_rows_o.append(np.zeros(A_other.shape[1]))
+        if n_cols >= 2:
+            if fs[0] > 0:
+                row = np.zeros(n_cols)
+                row[0:2] = np.array([2.0, -2.0]) * fs[0]
+                smoo_rows_t.append(row)
+                smoo_rows_o.append(np.zeros(A_other.shape[1]))
+            if fs[-1] > 0:
+                row = np.zeros(n_cols)
+                row[-2:] = np.array([-2.0, 2.0]) * fs[-1]
+                smoo_rows_t.append(row)
+                smoo_rows_o.append(np.zeros(A_other.shape[1]))
 
         if not smoo_rows_t:
             return A_target, A_other, d_in
