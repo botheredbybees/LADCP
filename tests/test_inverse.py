@@ -12,20 +12,37 @@ from ladcp.solution.inverse import (
     _add_zero_mean,
     _add_bottom_track,
     _add_barotropic,
+    InverseParams,
+    InverseResult,
+    compute_inverse,
 )
 import scipy.sparse
 
 
 def _make_ens(*, n_bins: int = 5, n_ens: int = 40,
-               u_val: float = 0.5, v_val: float = 0.1) -> EnsembleData:
-    """Synthetic EnsembleData where CTD descends 5 m per ensemble."""
+               u_val: float = 0.5, v_val: float = 0.1,
+               noise: float = 0.0) -> EnsembleData:
+    """Synthetic EnsembleData where CTD descends 5 m per ensemble.
+
+    Parameters
+    ----------
+    noise:
+        Std of Gaussian noise added to u/v. A non-zero value prevents
+        degenerate zero-variance windows (ruvs=0 → weight=NaN).
+    """
+    rng = np.random.default_rng(42)
     z = np.linspace(-20.0, -20.0 - 5.0 * (n_ens - 1), n_ens)
     izm = np.zeros((n_bins, n_ens))
     for b in range(n_bins):
         izm[b] = z - (b + 0.5) * 8.0
+    u_arr = np.full((n_bins, n_ens), u_val)
+    v_arr = np.full((n_bins, n_ens), v_val)
+    if noise > 0.0:
+        u_arr = u_arr + rng.normal(0.0, noise, u_arr.shape)
+        v_arr = v_arr + rng.normal(0.0, noise, v_arr.shape)
     return EnsembleData(
-        u=np.full((n_bins, n_ens), u_val),
-        v=np.full((n_bins, n_ens), v_val),
+        u=u_arr,
+        v=v_arr,
         w=np.zeros((n_bins, n_ens)),
         weight=np.ones((n_bins, n_ens)),
         izm=izm,
@@ -229,3 +246,44 @@ def test_solve_lsq_error_shape():
     d = np.random.rand(20)
     m, me = _solve_lsq(A, d)
     assert m.shape == me.shape == (5,)
+
+
+def test_compute_inverse_returns_result():
+    """compute_inverse must return an InverseResult with z, u, v arrays.
+
+    Note: noise=0.02 is required — a perfectly constant velocity field yields
+    ruvs=0 in every depth window, which propagates NaN into wm and leaves zero
+    valid observations. The noise gives the window statistics a non-zero spread.
+    """
+    ens = _make_ens(n_bins=5, n_ens=60, noise=0.02)
+    se = prepare_superensembles(ens, dz=10.0)
+    result = compute_inverse(se)
+    assert isinstance(result, InverseResult)
+    assert result.z.shape == result.u.shape == result.v.shape
+    assert len(result.z) > 0
+
+
+def test_compute_inverse_zero_mean_no_constraint():
+    """Without external constraints, result mean should be near zero.
+
+    Note: noise=0.02 keeps ruvs non-NaN so observations survive the weight filter.
+    The zero-mean fallback (_add_zero_mean) is triggered when botfac=barofac=0.
+    """
+    ens = _make_ens(n_bins=5, n_ens=60, u_val=0.0, v_val=0.0, noise=0.02)
+    se = prepare_superensembles(ens, dz=10.0)
+    params = InverseParams(barofac=0.0, botfac=0.0, sadcpfac=0.0)
+    result = compute_inverse(se, params=params)
+    assert abs(result.ubar) < 0.05
+    assert abs(result.vbar) < 0.05
+
+
+def test_compute_inverse_down_up_same_length():
+    """Down-cast and up-cast profiles must have same length as full profile.
+
+    Note: noise=0.02 is required for the same reason as test_compute_inverse_returns_result.
+    """
+    ens = _make_ens(n_bins=5, n_ens=60, noise=0.02)
+    se = prepare_superensembles(ens, dz=10.0)
+    result = compute_inverse(se)
+    assert result.u_do.shape == result.u.shape
+    assert result.u_up.shape == result.u.shape

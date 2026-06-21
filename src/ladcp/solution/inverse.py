@@ -507,3 +507,178 @@ def _solve_lsq(
         me = np.full(p, np.nan)
 
     return m, me
+
+
+@dataclass
+class InverseParams:
+    """Tuning parameters for compute_inverse() (getinv.m ps struct)."""
+    dz: float = 10.0          # depth bin size m
+    botfac: float = 1.0       # bottom-track constraint weight (0 = disable)
+    sadcpfac: float = 1.0     # SADCP constraint weight (0 = disable)
+    barofac: float = 1.0      # GPS barotropic constraint weight (0 = disable)
+    smoofac: float = 0.0      # curvature smoothing weight (0 = minimal)
+    velerr: float = 0.05      # nominal velocity error m/s
+    weightmin: float = 0.05   # minimum observation weight threshold
+    nav_error: float = 30.0   # navigation error m (for barvelerr computation)
+    down_up: bool = True       # also solve down-cast and up-cast separately
+
+
+@dataclass
+class InverseResult:
+    """Output of compute_inverse() (getinv.m dr struct)."""
+    z: np.ndarray       # (n_zbins,) depth m (positive, increasing downward)
+    u: np.ndarray       # (n_zbins,) eastward velocity m/s
+    v: np.ndarray       # (n_zbins,) northward velocity m/s
+    uerr: np.ndarray    # (n_zbins,) velocity error estimate m/s
+    nvel: np.ndarray    # (n_zbins,) number of observations per depth bin
+    u_do: np.ndarray    # (n_zbins,) downcast-only eastward velocity
+    v_do: np.ndarray    # (n_zbins,) downcast-only northward velocity
+    u_up: np.ndarray    # (n_zbins,) upcast-only eastward velocity
+    v_up: np.ndarray    # (n_zbins,) upcast-only northward velocity
+    u_ctd: np.ndarray   # (n_se,) CTD eastward velocity m/s
+    v_ctd: np.ndarray   # (n_se,) CTD northward velocity m/s
+    ubar: float         # depth-mean eastward velocity
+    vbar: float         # depth-mean northward velocity
+    zctd: np.ndarray    # (n_se,) CTD depth time series m
+    wctd: np.ndarray    # (n_se,) CTD vertical velocity m/s
+
+
+def compute_inverse(
+    se: SuperEnsemble,
+    *,
+    params: InverseParams | None = None,
+    u_ship: float = 0.0,
+    v_ship: float = 0.0,
+) -> InverseResult:
+    """Solve the LADCP inverse velocity problem (replicates getinv.m).
+
+    Parameters
+    ----------
+    se      : SuperEnsemble from prepare_superensembles().
+    params  : Tuning parameters; defaults to InverseParams().
+    u_ship  : Mean eastward ship velocity m/s over cast (from GPS start/end).
+    v_ship  : Mean northward ship velocity m/s over cast.
+    """
+    if params is None:
+        params = InverseParams()
+
+    n_se = se.izm.shape[1]
+
+    # --- Flatten observations and build A matrices ---
+    d_u, d_v, izv, jprof, wm = _flatten_obs(se, params.velerr, params.weightmin)
+    if len(d_u) < 10:
+        raise ValueError("Too few valid observations for inversion")
+
+    A_ocean_sp = _build_obs_matrix(izv, params.dz)
+    A_ctd_sp = _build_ctd_matrix(jprof, n_se)
+    n_zbins = A_ocean_sp.shape[1]
+
+    A_o_u, A_c_u, dw_u, idx_down, idx_up = _apply_weights(
+        A_ocean_sp, A_ctd_sp, d_u, wm
+    )
+    A_o_v, A_c_v, dw_v, _, _ = _apply_weights(A_ocean_sp, A_ctd_sp, d_v, wm)
+
+    # --- Depth vector for output ---
+    z = np.arange(1, n_zbins + 1) * params.dz  # positive, 1-indexed depth bins
+
+    # --- Smoothness constraints (applied to both U and V identically) ---
+    A_o_u, A_c_u, dw_u = _add_smoothness(A_o_u, A_c_u, dw_u, params.smoofac)
+    A_o_v, A_c_v, dw_v = _add_smoothness(A_o_v, A_c_v, dw_v, params.smoofac)
+
+    # --- Bottom-track constraint ---
+    has_btrack = params.botfac > 0 and np.any(np.isfinite(se.bvel[0]))
+    if has_btrack:
+        A_o_u, A_c_u, dw_u = _add_bottom_track(
+            A_o_u, A_c_u, dw_u,
+            se.bvel[0], se.bvels[0], botfac=params.botfac, velerr=params.velerr,
+        )
+        A_o_v, A_c_v, dw_v = _add_bottom_track(
+            A_o_v, A_c_v, dw_v,
+            se.bvel[1], se.bvels[1], botfac=params.botfac, velerr=params.velerr,
+        )
+
+    # --- Barotropic (GPS) constraint ---
+    has_baro = params.barofac > 0 and (u_ship != 0.0 or v_ship != 0.0)
+    if has_baro:
+        A_o_u, A_c_u, dw_u, A_o_v, A_c_v, dw_v = _add_barotropic(
+            A_o_u, A_c_u, dw_u, A_o_v, A_c_v, dw_v,
+            u_ship=u_ship, v_ship=v_ship, dt=se.dt, barofac=params.barofac,
+        )
+
+    # --- Zero-mean fallback when no external constraint ---
+    if not has_btrack and not has_baro:
+        A_o_u, A_c_u, dw_u = _add_zero_mean(A_o_u, A_c_u, dw_u)
+        A_o_v, A_c_v, dw_v = _add_zero_mean(A_o_v, A_c_v, dw_v)
+
+    # --- Solve full-cast system ---
+    A_full_u = np.hstack([A_o_u, A_c_u])
+    A_full_v = np.hstack([A_o_v, A_c_v])
+    m_u, me_u = _solve_lsq(A_full_u, dw_u)
+    m_v, me_v = _solve_lsq(A_full_v, dw_v)
+
+    u_ocean = m_u[:n_zbins]
+    v_ocean = m_v[:n_zbins]
+    u_ctd_neg = m_u[n_zbins:]
+    v_ctd_neg = m_v[n_zbins:]
+    # Sign convention: solved u_ctd_neg = -u_CTD  (see MATLAB dr.uctd = -real(uctd))
+    u_ctd = -u_ctd_neg[:n_se] if len(u_ctd_neg) >= n_se else np.full(n_se, np.nan)
+    v_ctd = -v_ctd_neg[:n_se] if len(v_ctd_neg) >= n_se else np.full(n_se, np.nan)
+
+    uerr = np.sqrt(me_u[:n_zbins] ** 2 + me_v[:n_zbins] ** 2)
+    nvel = np.asarray(A_ocean_sp.sum(axis=0)).ravel()
+
+    # --- Down/up cast separately (ps.down_up=1) ---
+    _BAROCLINIC_FAC = 10.0  # MATLAB: baroclinfac = 10 (large = forces zero mean)
+
+    def _solve_subset(idx: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        A_os = A_o_u[idx, :n_zbins]
+        A_cs = A_c_u[idx, :]
+        ds_u = dw_u[idx]
+        A_os2 = A_o_v[idx, :n_zbins]
+        A_cs2 = A_c_v[idx, :]
+        ds_v = dw_v[idx]
+
+        # Remove zero-constrained CTD columns
+        active = np.where(np.abs(A_cs).sum(axis=0) > 0)[0]
+        A_cs = A_cs[:, active]
+        A_cs2 = A_cs2[:, active]
+
+        # Add zero-mean baroclinic constraint
+        A_os = np.vstack([A_os, (_BAROCLINIC_FAC * np.ones(n_zbins))[np.newaxis, :]])
+        A_cs = np.vstack([A_cs, np.zeros((1, A_cs.shape[1]))])
+        ds_u = np.concatenate([ds_u, [0.0]])
+        A_os2 = np.vstack([A_os2, (_BAROCLINIC_FAC * np.ones(n_zbins))[np.newaxis, :]])
+        A_cs2 = np.vstack([A_cs2, np.zeros((1, A_cs2.shape[1]))])
+        ds_v = np.concatenate([ds_v, [0.0]])
+
+        if A_os.shape[0] < A_os.shape[1] + 2:
+            return np.full(n_zbins, np.nan), np.full(n_zbins, np.nan)
+
+        mu, _ = _solve_lsq(np.hstack([A_os, A_cs]), ds_u)
+        mv, _ = _solve_lsq(np.hstack([A_os2, A_cs2]), ds_v)
+        u_sub = mu[:n_zbins]
+        v_sub = mv[:n_zbins]
+        # Clip unreasonably large values
+        u_sub[np.abs(u_sub) > 5.0] = np.nan
+        v_sub[np.abs(v_sub) > 5.0] = np.nan
+        return u_sub, v_sub
+
+    if params.down_up and len(idx_down) > 5 and len(idx_up) > 5:
+        u_do, v_do = _solve_subset(idx_down)
+        u_up, v_up = _solve_subset(idx_up)
+    else:
+        u_do = u_ocean.copy()
+        v_do = v_ocean.copy()
+        u_up = u_ocean.copy()
+        v_up = v_ocean.copy()
+
+    return InverseResult(
+        z=z,
+        u=u_ocean, v=v_ocean, uerr=uerr, nvel=nvel,
+        u_do=u_do, v_do=v_do, u_up=u_up, v_up=v_up,
+        u_ctd=u_ctd, v_ctd=v_ctd,
+        ubar=float(np.nanmean(u_ocean)),
+        vbar=float(np.nanmean(v_ocean)),
+        zctd=se.z,
+        wctd=-np.nanmean(se.rw, axis=0),
+    )
