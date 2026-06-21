@@ -243,3 +243,75 @@ def test_timej_day_of_year_converted_to_absolute_julian(tmp_path: Path):
     assert abs(result.time_julian[2] - expected_t2) < 1e-9
     # Values must be absolute Julian days (~2.4 million), not day-of-year (1–366)
     assert result.time_julian[0] > 1000
+
+
+def _make_binary_cnv_latlon(
+    tmp_path: Path,
+    lat_vals: list[float],
+    lon_vals: list[float],
+    bad_lon_idx: int | None = None,
+) -> Path:
+    """Binary CNV with 'Store Lat/Lon Data' flag and nquan=6."""
+    BAD = -9.990e-29
+    rows = []
+    for i, (la, lo) in enumerate(zip(lat_vals, lon_vals)):
+        lo_val = BAD if (bad_lon_idx is not None and i == bad_lon_idx) else lo
+        rows.append([100.0 + i * 100, 15.0 - i, 35.0 + i * 0.1,
+                     2451545.0 + i * 0.1, la, lo_val])
+    data = np.array(rows, dtype=np.float64)
+    nquan = 6
+    header = (
+        f"# nquan = {nquan}\n"
+        "# name 0 = prDM: Pressure [db]\n"
+        "# name 1 = t090C: Temperature\n"
+        "# name 2 = sal00: Salinity\n"
+        "# name 3 = timeJ: Julian Days\n"
+        "# name 4 = latitude: Latitude\n"
+        "# name 5 = longitude: Longitude\n"
+        f"# bad_flag = {BAD}\n"
+        "# file_type = binary\n"
+        "* Store Lat/Lon Data = Append to Every Scan\n"
+        "*END*\n"
+    ).encode()
+    p = tmp_path / "test_latlon.cnv"
+    p.write_bytes(header + data.astype("<f4").tobytes())
+    return p
+
+
+def test_ctd_loads_lat_lon(tmp_path: Path):
+    """CNV with 'Store Lat/Lon Data' flag populates lat/lon of correct length."""
+    p = _make_binary_cnv_latlon(tmp_path, [-30.0, -30.01], [-140.0, -139.99])
+    result = load_ctd(p)
+    assert result.lat is not None
+    assert result.lon is not None
+    assert len(result.lat) == 2
+    assert len(result.lon) == 2
+    assert abs(result.lat[0] - (-30.0)) < 0.01
+    assert abs(result.lon[0] - (-140.0)) < 0.01
+    # Standard columns must still be populated correctly
+    assert abs(result.pressure_dbar[0] - 100.0) < 1.0
+    assert abs(result.pressure_dbar[1] - 200.0) < 1.0
+
+
+def test_ctd_no_lat_lon_returns_none(tmp_path: Path):
+    """CNV without 'Store Lat/Lon Data' flag returns lat=None, lon=None."""
+    data = np.array([[100.0, 15.0, 35.0, 2451545.0]], dtype=np.float64)
+    p = _make_binary_cnv(tmp_path, data)
+    result = load_ctd(p)
+    assert result.lat is None
+    assert result.lon is None
+
+
+def test_ctd_bad_flag_lat_lon_becomes_nan(tmp_path: Path):
+    """SBE bad-flag sentinel in a lat/lon column becomes NaN."""
+    p = _make_binary_cnv_latlon(
+        tmp_path,
+        [-30.0, -30.01],
+        [-140.0, -139.99],
+        bad_lon_idx=0,  # row 0 lon is bad
+    )
+    result = load_ctd(p)
+    assert result.lon is not None
+    assert np.isnan(result.lon[0])
+    assert not np.isnan(result.lon[1])
+    assert not np.isnan(result.lat[0])

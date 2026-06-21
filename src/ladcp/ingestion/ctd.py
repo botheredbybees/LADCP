@@ -20,6 +20,8 @@ class CTDTimeSeries:
     pressure_dbar: NDArray[np.float64]  # (nctd,) positive down
     temp_c: NDArray[np.float64]         # (nctd,) NaN if absent
     salinity: NDArray[np.float64]       # (nctd,) NaN if absent
+    lat: NDArray[np.float64] | None = None  # (nctd,) degrees N; NaN = bad fix
+    lon: NDArray[np.float64] | None = None  # (nctd,) degrees E; NaN = bad fix
 
 
 def _read_header_lines(path: Path) -> tuple[list[str], int]:
@@ -45,10 +47,13 @@ def _parse_sbe_header(lines: list[str]) -> dict:
         'file_type': 'ascii',
         'start_time_julian': None,
         'start_year': None,
+        'lat_lon_appended': False,
     }
     for line in lines:
         if line.strip() == '*END*':
             break
+        if 'Store Lat/Lon Data = Append to Every Scan' in line:
+            result['lat_lon_appended'] = True
         if not line.startswith('#'):
             continue
         content = line[1:].strip()
@@ -101,11 +106,26 @@ def _parse_start_time(date_str: str) -> float:
     return _to_julian(dt.year, dt.month, dt.day, frac_hour)
 
 
+def _extract_latlon(
+    arr: np.ndarray,
+    col_roles: dict[int, str | None],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[int, str | None]]:
+    """Slice lat/lon off the last two columns; return trimmed arr and col_roles."""
+    lat = arr[:, -2].copy()
+    lon = arr[:, -1].copy()
+    arr = arr[:, :-2]
+    n_std = arr.shape[1]
+    col_roles = {k: v for k, v in col_roles.items() if k < n_std}
+    return lat, lon, arr, col_roles
+
+
 def _build_ctd_time_series(
     arr: np.ndarray,
     col_roles: dict[int, str | None],
     time_start_julian: float | None,
     start_year: int | None = None,
+    lat: np.ndarray | None = None,
+    lon: np.ndarray | None = None,
 ) -> CTDTimeSeries:
     """Assemble CTDTimeSeries from a (n_scans, nquan) float64 array."""
     time_raw: np.ndarray | None = None
@@ -152,6 +172,8 @@ def _build_ctd_time_series(
         pressure_dbar=pressure,
         temp_c=temp if temp is not None else np.full(n, np.nan),
         salinity=salinity if salinity is not None else np.full(n, np.nan),
+        lat=lat,
+        lon=lon,
     )
 
 
@@ -173,7 +195,15 @@ def _read_sbe_ascii(
         mask = np.isclose(arr, bad_flag, rtol=1e-3, atol=0)
         arr[mask] = np.nan
 
-    return _build_ctd_time_series(arr, col_roles, time_start_julian, start_year=header_info.get('start_year'))
+    lat = lon = None
+    if header_info.get('lat_lon_appended') and arr.shape[1] >= 2:
+        lat, lon, arr, col_roles = _extract_latlon(arr, col_roles)
+
+    return _build_ctd_time_series(
+        arr, col_roles, time_start_julian,
+        start_year=header_info.get('start_year'),
+        lat=lat, lon=lon,
+    )
 
 
 def _read_sbe_binary(
@@ -201,7 +231,15 @@ def _read_sbe_binary(
         mask = np.isclose(arr, bad_flag, rtol=1e-3, atol=0)
         arr[mask] = np.nan
 
-    return _build_ctd_time_series(arr, col_roles, time_start_julian, start_year=header_info.get('start_year'))
+    lat = lon = None
+    if header_info.get('lat_lon_appended') and arr.shape[1] >= 2:
+        lat, lon, arr, col_roles = _extract_latlon(arr, col_roles)
+
+    return _build_ctd_time_series(
+        arr, col_roles, time_start_julian,
+        start_year=header_info.get('start_year'),
+        lat=lat, lon=lon,
+    )
 
 
 def _read_generic_ascii(path: Path, **kwargs) -> CTDTimeSeries:
