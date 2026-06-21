@@ -1,10 +1,7 @@
 """Unit tests for ladcp.qa.editing.edit_sidelobes."""
 from __future__ import annotations
 
-import dataclasses
-
 import numpy as np
-import pytest
 
 from ladcp.qa.editing import edit_sidelobes
 from ladcp.solution.inverse import EnsembleData
@@ -119,3 +116,20 @@ def test_returns_new_ensemble_not_mutated():
     np.testing.assert_array_equal(ens.weight, original_weight)  # not mutated
     assert result is not ens                                     # new object
     assert np.isnan(result.weight[0, 0])                        # sanity: mask applied
+
+
+def test_surface_mask_is_per_ensemble():
+    # Two ensembles at very different depths produce different zlim_surface values,
+    # so the same bin depth maps to different mask outcomes — proving the mask
+    # is computed per-ensemble via broadcasting, not from a scalar.
+    # z[0]=-200: zlim_surface = 0.06031*(-200) - 12 ≈ -24.06
+    # z[1]=-20:  zlim_surface = 0.06031*(-20)  - 12 ≈ -13.21
+    # bin at izm=-18:
+    #   ens 0: -18 > -24.06 → masked (shallower than limit for deep ADCP)
+    #   ens 1: -18 < -13.21 → clean  (deeper than limit for shallow ADCP)
+    z   = np.array([-200.0, -20.0])
+    izm = np.array([[-18.0, -18.0]])   # (1, 2) same bin depth, two ensembles
+    ens = _make_ens(izm, z)
+    result = edit_sidelobes(ens, theta_deg=20.0, cell_size_m=8.0)
+    assert np.isnan(result.weight[0, 0]), "deep-ADCP ensemble: shallow bin is masked"
+    assert result.weight[0, 1] == 1.0, "shallow-ADCP ensemble: bin is below limit"

@@ -17,8 +17,11 @@ def edit_sidelobes(
 ) -> EnsembleData:
     """Zero-weight ADCP bins contaminated by surface and bottom acoustic side-lobes.
 
-    Matches LDEO_IX edit_data.m lines 142–186 (Eric Firing convention).
-    Returns a new EnsembleData; the input is not modified.
+    Based on LDEO_IX edit_data.m lines 142–186 (Eric Firing convention).
+    Unlike edit_data.m, the surface edit is applied unconditionally — the MATLAB
+    reference only applies it for uplooker configurations, but surface sidelobe
+    contamination is real regardless. The 1.5× cell_size margin keeps the edit
+    conservative. Returns a new EnsembleData; the input is not modified.
     """
     f = 1.0 - math.cos(math.radians(theta_deg))
     margin = 1.5 * cell_size_m
