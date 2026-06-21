@@ -441,6 +441,54 @@ def _add_bottom_track(
     )
 
 
+def _add_sadcp(
+    A_ocean: np.ndarray,
+    A_ctd: np.ndarray,
+    d: np.ndarray,
+    *,
+    sadcp_z: np.ndarray,
+    sadcp_vel: np.ndarray,
+    sadcp_err: np.ndarray,
+    dz: float,
+    sadcpfac: float = 1.0,
+    velerr: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Constrain u_ocean at SADCP depth bins (lainsadcp from getinv.m).
+
+    Each valid SADCP measurement at depth z_j gets one row in A_ocean at
+    column round(z_j / dz) - 1 with weight sadcpfac * velerr / sadcp_err[j].
+
+    Parameters
+    ----------
+    sadcp_z   : (n_sadcp,) positive depth m
+    sadcp_vel : (n_sadcp,) velocity component m/s
+    sadcp_err : (n_sadcp,) velocity std m/s
+    """
+    n_zbins = A_ocean.shape[1]
+    valid = np.isfinite(sadcp_z) & np.isfinite(sadcp_vel) & np.isfinite(sadcp_err)
+    if not valid.any():
+        return A_ocean, A_ctd, d
+
+    col_scale = np.sqrt(np.abs(A_ocean).sum(axis=0))  # (n_zbins,)
+
+    rows_o, rows_c, rhs = [], [], []
+    for k in np.where(valid)[0]:
+        j = int(np.round(sadcp_z[k] / dz)) - 1
+        j = min(max(j, 0), n_zbins - 1)
+        w = sadcpfac * (velerr / max(sadcp_err[k], 1e-6)) * col_scale[j]
+        row_o = np.zeros(n_zbins)
+        row_o[j] = w
+        rows_o.append(row_o)
+        rows_c.append(np.zeros(A_ctd.shape[1]))
+        rhs.append(sadcp_vel[k] * w)
+
+    return (
+        np.vstack([A_ocean, rows_o]),
+        np.vstack([A_ctd, rows_c]),
+        np.concatenate([d, rhs]),
+    )
+
+
 def _add_barotropic(
     A_ocean_u: np.ndarray,
     A_ctd_u: np.ndarray,
@@ -549,6 +597,10 @@ def compute_inverse(
     params: InverseParams | None = None,
     u_ship: float = 0.0,
     v_ship: float = 0.0,
+    sadcp_z: np.ndarray | None = None,
+    sadcp_u: np.ndarray | None = None,
+    sadcp_v: np.ndarray | None = None,
+    sadcp_err: np.ndarray | None = None,
 ) -> InverseResult:
     """Solve the LADCP inverse velocity problem (replicates getinv.m).
 
@@ -558,6 +610,10 @@ def compute_inverse(
     params  : Tuning parameters; defaults to InverseParams().
     u_ship  : Mean eastward ship velocity m/s over cast (from GPS start/end).
     v_ship  : Mean northward ship velocity m/s over cast.
+    sadcp_z : SADCP depth m (positive) or None.
+    sadcp_u : SADCP eastward velocity m/s or None.
+    sadcp_v : SADCP northward velocity m/s or None.
+    sadcp_err : SADCP velocity std m/s or None.
     """
     if params is None:
         params = InverseParams()
@@ -597,6 +653,21 @@ def compute_inverse(
             se.bvel[1], se.bvels[1], botfac=params.botfac, velerr=params.velerr,
         )
 
+    # --- SADCP (ship ADCP) constraint ---
+    has_sadcp = (params.sadcpfac > 0 and sadcp_z is not None
+                 and np.any(np.isfinite(sadcp_z)))
+    if has_sadcp:
+        A_o_u, A_c_u, dw_u = _add_sadcp(
+            A_o_u, A_c_u, dw_u,
+            sadcp_z=sadcp_z, sadcp_vel=sadcp_u, sadcp_err=sadcp_err,
+            dz=params.dz, sadcpfac=params.sadcpfac, velerr=params.velerr,
+        )
+        A_o_v, A_c_v, dw_v = _add_sadcp(
+            A_o_v, A_c_v, dw_v,
+            sadcp_z=sadcp_z, sadcp_vel=sadcp_v, sadcp_err=sadcp_err,
+            dz=params.dz, sadcpfac=params.sadcpfac, velerr=params.velerr,
+        )
+
     # --- Barotropic (GPS) constraint ---
     has_baro = params.barofac > 0 and (u_ship != 0.0 or v_ship != 0.0)
     if has_baro:
@@ -606,7 +677,7 @@ def compute_inverse(
         )
 
     # --- Zero-mean fallback when no external constraint ---
-    if not has_btrack and not has_baro:
+    if not has_btrack and not has_baro and not has_sadcp:
         A_o_u, A_c_u, dw_u = _add_zero_mean(A_o_u, A_c_u, dw_u)
         A_o_v, A_c_v, dw_v = _add_zero_mean(A_o_v, A_c_v, dw_v)
 

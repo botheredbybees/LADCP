@@ -11,6 +11,7 @@ from ladcp.solution.inverse import (
     _add_smoothness,
     _add_zero_mean,
     _add_bottom_track,
+    _add_sadcp,
     _add_barotropic,
     InverseParams,
     InverseResult,
@@ -287,3 +288,34 @@ def test_compute_inverse_down_up_same_length():
     result = compute_inverse(se)
     assert result.u_do.shape == result.u.shape
     assert result.u_up.shape == result.u.shape
+
+
+def test_add_sadcp_appends_rows():
+    """Each finite SADCP measurement adds one row to A_ocean."""
+    n_obs, n_zbins, n_se = 10, 8, 4
+    A_o = np.zeros((n_obs, n_zbins))
+    A_c = np.zeros((n_obs, n_se))
+    d = np.zeros(n_obs)
+    sadcp_z = np.array([15.0, 25.0, 35.0, np.nan])  # 3 valid
+    sadcp_vel = np.array([0.1, 0.2, 0.3, np.nan])
+    sadcp_err = np.array([0.02, 0.02, 0.02, 0.02])
+    A_o2, A_c2, d2 = _add_sadcp(
+        A_o, A_c, d,
+        sadcp_z=sadcp_z, sadcp_vel=sadcp_vel, sadcp_err=sadcp_err,
+        dz=10.0, sadcpfac=1.0, velerr=0.05,
+    )
+    assert A_o2.shape[0] == n_obs + 3  # 3 finite measurements
+
+
+def test_add_sadcp_zeros_in_A_ctd():
+    """SADCP constraint rows must have no A_ctd contribution."""
+    n_obs, n_zbins, n_se = 5, 4, 3
+    A_o = np.zeros((n_obs, n_zbins))
+    A_c = np.zeros((n_obs, n_se))
+    d = np.zeros(n_obs)
+    A_o2, A_c2, d2 = _add_sadcp(
+        A_o, A_c, d,
+        sadcp_z=np.array([10.0]), sadcp_vel=np.array([0.5]),
+        sadcp_err=np.array([0.02]), dz=10.0, sadcpfac=1.0, velerr=0.05,
+    )
+    assert A_c2[-1].sum() == 0.0  # last row of A_ctd = zeros
