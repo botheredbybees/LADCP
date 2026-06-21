@@ -315,3 +315,36 @@ def test_ctd_bad_flag_lat_lon_becomes_nan(tmp_path: Path):
     assert np.isnan(result.lon[0])
     assert not np.isnan(result.lon[1])
     assert not np.isnan(result.lat[0])
+
+
+from ladcp.ingestion.ctd import compute_ship_velocity
+
+
+def test_compute_ship_velocity_linear_track():
+    """Straight eastward track at 1.0 m/s returns (u≈1.0, v≈0.0)."""
+    import math
+    # At lat=0 deg, 1 deg longitude = 111320 m. Moving east at 1 m/s:
+    # Δlon_deg/s = 1.0 / 111320
+    lat0 = 0.0
+    speed_mps = 1.0
+    dt_s = np.array([0.0, 100.0, 200.0, 300.0])
+    east_m = speed_mps * dt_s
+    lon = lon0 = -140.0
+    lon_arr = lon0 + east_m / (math.cos(math.radians(lat0)) * 111320.0)
+    lat_arr = np.full(4, lat0)
+    t0 = 2457100.0  # arbitrary Julian day
+    time_jul = t0 + dt_s / 86400.0
+    u_ship, v_ship = compute_ship_velocity(lat_arr, lon_arr, time_jul)
+    assert abs(u_ship - 1.0) < 0.01, f"u_ship={u_ship:.4f} expected ≈1.0"
+    assert abs(v_ship) < 0.01, f"v_ship={v_ship:.4f} expected ≈0.0"
+
+
+def test_compute_ship_velocity_insufficient_data():
+    """All-NaN lat/lon returns (0.0, 0.0)."""
+    lat = np.full(5, np.nan)
+    lon = np.full(5, np.nan)
+    t0 = 2457100.0
+    time_jul = t0 + np.arange(5) / 86400.0
+    u_ship, v_ship = compute_ship_velocity(lat, lon, time_jul)
+    assert u_ship == 0.0
+    assert v_ship == 0.0

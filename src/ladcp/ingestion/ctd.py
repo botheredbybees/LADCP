@@ -357,3 +357,28 @@ def assign_bin_depths(
     izm = z_m[np.newaxis, :] + sign * bin_offsets[:, np.newaxis]  # (nbin, nens)
 
     return z_m, izm
+
+
+def compute_ship_velocity(
+    lat: NDArray[np.float64],
+    lon: NDArray[np.float64],
+    time_jul: NDArray[np.float64],
+) -> tuple[float, float]:
+    """Estimate mean ship velocity from GPS fixes via linear regression.
+
+    Returns (u_ship, v_ship) in m/s (eastward, northward).
+    Returns (0.0, 0.0) when fewer than 2 valid fixes exist.
+    """
+    valid = np.isfinite(lat) & np.isfinite(lon)
+    if int(valid.sum()) < 2:
+        return 0.0, 0.0
+    lat_v = lat[valid]
+    lon_v = lon[valid]
+    t_v = time_jul[valid]
+    lat0 = float(lat_v[0])
+    east_m = (lon_v - lon_v[0]) * math.cos(math.radians(lat0)) * 111320.0
+    north_m = (lat_v - lat_v[0]) * 111320.0
+    t_s = (t_v - t_v[0]) * 86400.0
+    u_ship = float(np.polyfit(t_s, east_m, 1)[0])
+    v_ship = float(np.polyfit(t_s, north_m, 1)[0])
+    return u_ship, v_ship
