@@ -62,8 +62,10 @@ def ref_path(test_data_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="module")
-def inverse_result(dl_path: Path, cnv_path: Path) -> InverseResult:
+def inverse_result(dl_path: Path, cnv_path: Path, test_data_dir: Path) -> InverseResult:
     """Run full pipeline on P16N cast 003 raw data."""
+    from ladcp.ingestion.ctd import compute_ship_velocity
+
     rdi = load_rdi(dl_path)
     ctd = load_ctd(cnv_path)
 
@@ -103,6 +105,30 @@ def inverse_result(dl_path: Path, cnv_path: Path) -> InverseResult:
     bvels = np.full_like(bvel, 0.02)                      # 2 cm/s nominal std
     hbot = np.nanmean(rdi.btrack_range_m, axis=0)  # (nens,) mean of 4-beam ranges
 
+    # GPS nav interpolated onto ensemble times
+    if ctd.lat is not None:
+        slat = np.interp(
+            rdi.time_julian, ctd.time_julian, ctd.lat, left=np.nan, right=np.nan
+        )
+        slon = np.interp(
+            rdi.time_julian, ctd.time_julian, ctd.lon, left=np.nan, right=np.nan
+        )
+        u_ship, v_ship = compute_ship_velocity(ctd.lat, ctd.lon, ctd.time_julian)
+    else:
+        slat = np.full(rdi.nens, np.nan)
+        slon = np.full(rdi.nens, np.nan)
+        u_ship, v_ship = 0.0, 0.0
+
+    # SADCP fixture (optional — skipped gracefully if not generated yet)
+    sadcp_path = test_data_dir / "sadcp_003.npz"
+    if sadcp_path.exists():
+        npz = np.load(sadcp_path)
+        sadcp_z, sadcp_u, sadcp_v, sadcp_err = (
+            npz["z"], npz["u"], npz["v"], npz["err"]
+        )
+    else:
+        sadcp_z = sadcp_u = sadcp_v = sadcp_err = None
+
     ens = EnsembleData(
         u=u_earth,
         v=v_earth,
@@ -110,20 +136,28 @@ def inverse_result(dl_path: Path, cnv_path: Path) -> InverseResult:
         weight=weight,
         izm=izm_neg,
         z=z_neg,
-        time_jul=rdi.time_julian,  # already Julian days
+        time_jul=rdi.time_julian,
         bvel=bvel,
         bvels=bvels,
         hbot=hbot,
         izd=np.arange(rdi.nbin),
         izu=np.array([], dtype=int),
-        slat=np.full(rdi.nens, np.nan),
-        slon=np.full(rdi.nens, np.nan),
+        slat=slat,
+        slon=slon,
     )
 
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
 
     se = prepare_superensembles(ens, dz=16.0)
-    return compute_inverse(se)
+    return compute_inverse(
+        se,
+        u_ship=u_ship,
+        v_ship=v_ship,
+        sadcp_z=sadcp_z,
+        sadcp_u=sadcp_u,
+        sadcp_v=sadcp_v,
+        sadcp_err=sadcp_err,
+    )
 
 
 @pytest.mark.integration
@@ -156,7 +190,7 @@ def test_inverse_depth_range(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=False, reason="Pipeline gap: no GPS/SADCP constraint; remove once pipeline complete")
+@pytest.mark.xfail(strict=False, reason="RMSE target not yet met; remove once pipeline complete")
 def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
     """RMS error in u vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
     ds = netCDF4.Dataset(ref_path)
@@ -179,7 +213,7 @@ def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=False, reason="Pipeline gap: no GPS/SADCP constraint; remove once pipeline complete")
+@pytest.mark.xfail(strict=False, reason="RMSE target not yet met; remove once pipeline complete")
 def test_inverse_v_rmse(inverse_result: InverseResult, ref_path: Path):
     """RMS error in v vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
     ds = netCDF4.Dataset(ref_path)
