@@ -199,3 +199,33 @@ def test_add_barotropic_appends_one_row():
     )
     assert A_cu.shape[0] == n_obs + 1
     assert du[-1] != 0.0   # RHS = -u_ship * weight
+
+
+def test_solve_lsq_identity():
+    """Identity system must recover exact solution."""
+    from ladcp.solution.inverse import _solve_lsq
+    A = np.eye(4)
+    d = np.array([1.0, 2.0, 3.0, 4.0])
+    m, me = _solve_lsq(A, d)
+    assert np.allclose(m, d)
+    assert np.all(me >= 0)
+
+
+def test_solve_lsq_overdetermined_consistent():
+    """Consistent overdetermined system must find exact solution."""
+    from ladcp.solution.inverse import _solve_lsq
+    # 3 equations, 2 unknowns: x=1, y=2
+    A = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+    d = np.array([1.0, 2.0, 3.0])
+    m, me = _solve_lsq(A, d)
+    assert np.allclose(m, [1.0, 2.0], atol=1e-10)
+    assert np.all(np.isfinite(me))
+
+
+def test_solve_lsq_error_shape():
+    """Error vector must have same length as solution vector."""
+    from ladcp.solution.inverse import _solve_lsq
+    A = np.random.rand(20, 5)
+    d = np.random.rand(20)
+    m, me = _solve_lsq(A, d)
+    assert m.shape == me.shape == (5,)

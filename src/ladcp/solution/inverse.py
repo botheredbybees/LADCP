@@ -6,6 +6,7 @@ least-squares inversion) from the LDEO_IX MATLAB reference implementation.
 from __future__ import annotations
 
 import numpy as np
+import scipy.linalg
 from dataclasses import dataclass
 from scipy.sparse import csr_matrix
 
@@ -476,3 +477,33 @@ def _add_barotropic(
     d_v2 = np.concatenate([d_v, [-v_ship * barofac * fac]])
 
     return A_ocean_u2, A_ctd_u2, d_u2, A_ocean_v2, A_ctd_v2, d_v2
+
+
+def _solve_lsq(
+    A: np.ndarray,
+    d: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Solve the least-squares system d = A*m (replicates lesqfit() + lainsolv()).
+
+    Returns
+    -------
+    m  : (n_params,) solution vector
+    me : (n_params,) 1-sigma parameter error estimates
+
+    Error formula matches MATLAB lesqfit:
+        me = sqrt(diag(inv(A'A)) * ||d - Am||² / (n - p))
+    """
+    m, _, _, _ = scipy.linalg.lstsq(A, d, check_finite=False)
+
+    # Error estimate via normal equations
+    dm = A @ m
+    n, p = A.shape
+    dof = max(n - p, 1)
+    sigma2 = float(np.sum((d - dm) ** 2) / dof)
+    try:
+        AtA_inv = np.linalg.inv(A.T @ A)
+        me = np.sqrt(np.abs(np.diag(AtA_inv)) * sigma2)
+    except np.linalg.LinAlgError:
+        me = np.full(p, np.nan)
+
+    return m, me
