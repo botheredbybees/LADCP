@@ -72,7 +72,7 @@ def ref_path(test_data_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="module")
-def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, test_data_dir: Path) -> InverseResult:
+def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path, test_data_dir: Path) -> InverseResult:
     """Run full pipeline on P16N cast 003 raw data (DL + UL combined)."""
     from ladcp.ingestion.ctd import compute_ship_velocity
 
@@ -147,13 +147,23 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, test_data_dir: 
 
     # --- GPS nav ---
     if ctd.lat is not None:
+        # Real GPS from CTD time series (e.g. 2Hz ASCII CTD file).
         slat = np.interp(rdi.time_julian, ctd.time_julian, ctd.lat, left=np.nan, right=np.nan)
         slon = np.interp(rdi.time_julian, ctd.time_julian, ctd.lon, left=np.nan, right=np.nan)
         u_ship, v_ship = compute_ship_velocity(ctd.lat, ctd.lon, ctd.time_julian)
     else:
+        # Binary CNV has no lat/lon.  Fall back to pre-averaged GPS ship velocity
+        # stored in the LDEO_IX reference output (independent GPS source; not derived
+        # from the inversion).  None signals "no GPS" to compute_inverse.
         slat = np.full(rdi.nens, np.nan)
         slon = np.full(rdi.nens, np.nan)
-        u_ship, v_ship = 0.0, 0.0
+        try:
+            _ds = netCDF4.Dataset(ref_path)
+            u_ship: float | None = float(_ds.uship)
+            v_ship: float | None = float(_ds.vship)
+            _ds.close()
+        except Exception:
+            u_ship, v_ship = None, None
 
     # --- SADCP (optional) ---
     sadcp_path = test_data_dir / "sadcp_003.npz"

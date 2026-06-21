@@ -313,6 +313,36 @@ def test_compute_inverse_with_barotropic():
     assert result.u.shape == result.z.shape
 
 
+def test_barotropic_activates_for_stationary_ship():
+    """u_ship=0.0 must still activate the barotropic constraint (GPS says ship stopped).
+
+    The constraint sets mean(u_ctd) = u_ship, not u_ocean directly, so we can't
+    assert ubar ≈ 0 without bottom-track data.  We verify it runs and produces a
+    result that differs from the no-GPS zero-mean fallback.
+    """
+    ens = _make_ens(n_bins=5, n_ens=60, u_val=0.5, noise=0.02)
+    se = prepare_superensembles(ens, dz=10.0)
+    params = InverseParams(botfac=0.0, barofac=1.0, sadcpfac=0.0)
+    result_gps = compute_inverse(se, params=params, u_ship=0.0, v_ship=0.0)
+    result_no_gps = compute_inverse(se, params=params, u_ship=None, v_ship=None)
+    assert isinstance(result_gps, InverseResult)
+    # The two solutions must differ (GPS constraint changes the system)
+    assert not np.allclose(result_gps.u, result_no_gps.u)
+
+
+def test_barotropic_disabled_when_no_gps():
+    """u_ship=None must disable the barotropic constraint entirely."""
+    ens = _make_ens(n_bins=5, n_ens=60, u_val=1.0, v_val=0.5, noise=0.02)
+    se = prepare_superensembles(ens, dz=10.0)
+    params = InverseParams(botfac=0.0, barofac=1.0, sadcpfac=0.0)
+    # No GPS → falls back to zero-mean; u_ship=None should not crash.
+    result_no_gps = compute_inverse(se, params=params, u_ship=None, v_ship=None)
+    assert isinstance(result_no_gps, InverseResult)
+    # Same call with default (also None) should behave identically.
+    result_default = compute_inverse(se, params=params)
+    np.testing.assert_allclose(result_no_gps.u, result_default.u)
+
+
 def test_compute_inverse_with_sadcp():
     """SADCP branch in compute_inverse must not crash and produce a result."""
     ens = _make_ens(n_bins=5, n_ens=60, noise=0.02)

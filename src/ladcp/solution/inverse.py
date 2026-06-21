@@ -589,8 +589,8 @@ def compute_inverse(
     se: SuperEnsemble,
     *,
     params: InverseParams | None = None,
-    u_ship: float = 0.0,
-    v_ship: float = 0.0,
+    u_ship: float | None = None,
+    v_ship: float | None = None,
     sadcp_z: np.ndarray | None = None,
     sadcp_u: np.ndarray | None = None,
     sadcp_v: np.ndarray | None = None,
@@ -602,8 +602,9 @@ def compute_inverse(
     ----------
     se      : SuperEnsemble from prepare_superensembles().
     params  : Tuning parameters; defaults to InverseParams().
-    u_ship  : Mean eastward ship velocity m/s over cast (from GPS start/end).
-    v_ship  : Mean northward ship velocity m/s over cast.
+    u_ship  : Mean eastward ship velocity m/s (from GPS). None = no GPS available.
+              Pass 0.0 for a stationary ship — that is still a valid GPS constraint.
+    v_ship  : Mean northward ship velocity m/s (from GPS). None = no GPS available.
     sadcp_z : SADCP depth m (positive) or None.
     sadcp_u : SADCP eastward velocity m/s or None.
     sadcp_v : SADCP northward velocity m/s or None.
@@ -663,11 +664,14 @@ def compute_inverse(
         )
 
     # --- Barotropic (GPS) constraint ---
-    has_baro = params.barofac > 0 and (u_ship != 0.0 or v_ship != 0.0)
+    # Gate on whether GPS was provided (u_ship is not None), not on ship speed.
+    # A stationary ship (u_ship=0.0) is still a valid GPS-derived constraint.
+    has_baro = params.barofac > 0 and u_ship is not None
     if has_baro:
         A_o_u, A_c_u, dw_u, A_o_v, A_c_v, dw_v = _add_barotropic(
             A_o_u, A_c_u, dw_u, A_o_v, A_c_v, dw_v,
-            u_ship=u_ship, v_ship=v_ship, dt=se.dt, barofac=params.barofac,
+            u_ship=float(u_ship), v_ship=float(v_ship),  # type: ignore[arg-type]
+            dt=se.dt, barofac=params.barofac,
         )
 
     # --- Zero-mean fallback when no external constraint ---
