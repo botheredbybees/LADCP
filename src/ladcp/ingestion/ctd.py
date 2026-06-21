@@ -42,6 +42,7 @@ def _parse_sbe_header(lines: list[str]) -> dict:
     """Extract structured metadata from SBE CNV header lines."""
     result: dict = {
         'nquan': None,
+        'nvalues': None,
         'columns': {},
         'bad_flag': None,
         'file_type': 'ascii',
@@ -59,6 +60,8 @@ def _parse_sbe_header(lines: list[str]) -> dict:
         content = line[1:].strip()
         if content.startswith('nquan ='):
             result['nquan'] = int(content.split('=', 1)[1].strip())
+        elif content.startswith('nvalues ='):
+            result['nvalues'] = int(content.split('=', 1)[1].strip())
         elif m := re.match(r'name (\d+) = (\w+)', content):
             result['columns'][int(m.group(1))] = m.group(2)
         elif content.startswith('bad_flag ='):
@@ -293,6 +296,24 @@ def _read_generic_ascii(path: Path, **kwargs) -> CTDTimeSeries:
     )
 
 
+def _detect_binary_by_filesize(path: Path, data_offset: int, header_info: dict) -> None:
+    """Override file_type to 'binary' when the data section size matches nvalues×nquan×4.
+
+    Also clears lat_lon_appended when the size matches nquan (not nquan+2) floats per scan,
+    which happens when Seasave writes binary without embedding the appended lat/lon columns.
+    """
+    nquan = header_info.get('nquan')
+    nvalues = header_info.get('nvalues')
+    if not nquan or not nvalues:
+        return
+    data_bytes = path.stat().st_size - data_offset
+    if abs(data_bytes - nvalues * nquan * 4) <= 4:
+        header_info['file_type'] = 'binary'
+        header_info['lat_lon_appended'] = False
+    elif abs(data_bytes - nvalues * (nquan + 2) * 4) <= 4:
+        header_info['file_type'] = 'binary'
+
+
 def load_ctd(path: Path | str, **kwargs) -> CTDTimeSeries:
     """Load a CTD time-series file; auto-detect SBE binary, SBE ASCII, or generic ASCII.
 
@@ -311,6 +332,7 @@ def load_ctd(path: Path | str, **kwargs) -> CTDTimeSeries:
     try:
         lines, data_offset = _read_header_lines(path)
         header_info = _parse_sbe_header(lines)
+        _detect_binary_by_filesize(path, data_offset, header_info)
         fmt = _detect_format(header_info)
 
         if fmt == 'binary':

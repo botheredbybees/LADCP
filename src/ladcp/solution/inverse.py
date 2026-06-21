@@ -135,20 +135,14 @@ def prepare_superensembles(
         v_win = ens.v[:, i1]   # (MATLAB uses w=d.weight*0+1 = all ones)
         w_win = ens.w[:, i1]
 
-        # Per-ensemble reference velocity: median of reference bins
-        # MATLAB: ur = medianan(d.ru(izr, i1)) — plain median, no weight applied
-        izr_valid = izr[izr < n_bins]
-        ur_t = np.nanmedian(u_win[izr_valid], axis=0)  # (n_win,)
-        vr_t = np.nanmedian(v_win[izr_valid], axis=0)
-
-        # Remove per-ensemble reference, take median, add back mean reference
-        # MATLAB: di.ru(:,im) = medianan(d.ru - ur_broadcast)' + mean(ur)
-        u_deref = u_win - ur_t[np.newaxis, :]
-        v_deref = v_win - vr_t[np.newaxis, :]
-
-        ru[:, im] = np.nanmedian(u_deref, axis=1) + np.nanmean(ur_t)
-        rv[:, im] = np.nanmedian(v_deref, axis=1) + np.nanmean(vr_t)
-        rw[:, im] = np.nanmedian(w_win, axis=1)
+        # Time-average each bin over the window.
+        # MATLAB prepinv.m uses medianan(X, iav) with iav=round(n_win/2), which
+        # averages ~all sorted elements — effectively a mean, not a median.
+        # The per-time reference subtraction/re-addition cancels exactly, so the
+        # formula reduces to mean(u_win, axis=time) per bin.
+        ru[:, im] = np.nanmean(u_win, axis=1)
+        rv[:, im] = np.nanmean(v_win, axis=1)
+        rw[:, im] = np.nanmean(w_win, axis=1)
 
         # Velocity uncertainty: combined U+V std over window
         # Fix I-4: single-sample window — use ddof=0 to return 0 not NaN (matches stdnan())

@@ -27,7 +27,7 @@ def edit_sidelobes(
     margin = 1.5 * cell_size_m
 
     if zbottom is None:
-        derived = float(np.nanmedian(-ens.z + ens.hbot))
+        derived = float(np.nanmax(-ens.z + ens.hbot))
         zbottom = derived if math.isfinite(derived) else None
 
     # Surface mask: bins shallower than zlim_surface are contaminated.
