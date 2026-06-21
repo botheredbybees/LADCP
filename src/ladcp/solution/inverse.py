@@ -394,3 +394,85 @@ def _add_zero_mean(
         np.vstack([A_ctd, row_c[np.newaxis, :]]),
         np.concatenate([d, [0.0]]),
     )
+
+
+def _add_bottom_track(
+    A_ocean: np.ndarray,
+    A_ctd: np.ndarray,
+    d: np.ndarray,
+    bvel: np.ndarray,
+    bvels: np.ndarray,
+    *,
+    botfac: float = 1.0,
+    velerr: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Constrain CTD velocity to bottom-track velocity where available (lainbott).
+
+    Each valid ensemble e gets one row: A_ctd[new_row, e] = weight_e
+    with d[new_row] = bvel[e] * weight_e.
+    Weight = botfac * velerr / bvels[e] scaled by sqrt(sum(|A_ctd columns|)).
+
+    Parameters
+    ----------
+    bvel  : (n_se,) bottom-track velocity component (NaN = no measurement)
+    bvels : (n_se,) bottom-track velocity std (m/s)
+    """
+    n_se = A_ctd.shape[1]
+    valid = np.isfinite(bvel) & np.isfinite(bvels) & (bvels > 0)
+    if not valid.any():
+        return A_ocean, A_ctd, d
+
+    col_scale = np.sqrt(np.abs(A_ctd).sum(axis=0))  # (n_se,)
+
+    rows_o, rows_c, rhs = [], [], []
+    for e in np.where(valid)[0]:
+        weight_e = botfac * (velerr / bvels[e]) * col_scale[e]
+        row_c = np.zeros(n_se)
+        row_c[e] = weight_e
+        rows_c.append(row_c)
+        rows_o.append(np.zeros(A_ocean.shape[1]))
+        rhs.append(bvel[e] * weight_e)
+
+    return (
+        np.vstack([A_ocean, rows_o]),
+        np.vstack([A_ctd, rows_c]),
+        np.concatenate([d, rhs]),
+    )
+
+
+def _add_barotropic(
+    A_ocean_u: np.ndarray,
+    A_ctd_u: np.ndarray,
+    d_u: np.ndarray,
+    A_ocean_v: np.ndarray,
+    A_ctd_v: np.ndarray,
+    d_v: np.ndarray,
+    *,
+    u_ship: float,
+    v_ship: float,
+    dt: np.ndarray,
+    barofac: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Constrain time-mean CTD velocity = GPS-derived ship velocity (lainbaro).
+
+    Appends one row: sum(A_ctd * dt / T) = u_ship.
+    Weight scaled by sqrt(sum of CTD column norms) to balance the system.
+    """
+    T = float(dt.sum())
+    n_se = A_ctd_u.shape[1]
+    col_scale = np.sqrt(np.abs(A_ctd_u).sum(axis=0))  # (n_se,)
+    fac = float(np.sqrt(np.sum(col_scale)))
+
+    # Barotropic row: dt[e]/T per column, scaled
+    row_c = dt / T * barofac * fac
+    row_o = np.zeros(A_ocean_u.shape[1])
+
+    A_ocean_u2 = np.vstack([A_ocean_u, row_o[np.newaxis, :]])
+    A_ctd_u2 = np.vstack([A_ctd_u, row_c[np.newaxis, :]])
+    d_u2 = np.concatenate([d_u, [-u_ship * barofac * fac]])
+
+    A_ocean_v2 = np.vstack([A_ocean_v, row_o[np.newaxis, :]])
+    A_ctd_v2 = np.vstack([A_ctd_v, row_c[np.newaxis, :]])
+    d_v2 = np.concatenate([d_v, [-v_ship * barofac * fac]])
+
+    return A_ocean_u2, A_ctd_u2, d_u2, A_ocean_v2, A_ctd_v2, d_v2

@@ -10,6 +10,8 @@ from ladcp.solution.inverse import (
     _apply_weights,
     _add_smoothness,
     _add_zero_mean,
+    _add_bottom_track,
+    _add_barotropic,
 )
 import scipy.sparse
 
@@ -166,3 +168,34 @@ def test_add_zero_mean_appends_one_row():
     A_o2, A_c2, d2 = _add_zero_mean(A_o, A_c, d)
     assert A_o2.shape[0] == 6
     assert d2[-1] == 0.0  # RHS = 0 for zero-mean
+
+
+def test_add_bottom_track_appends_rows():
+    """One constraint row per ensemble with valid bottom track."""
+    n_obs, n_zbins, n_se = 10, 5, 4
+    A_o = np.zeros((n_obs, n_zbins))
+    A_c = np.zeros((n_obs, n_se))
+    d = np.zeros(n_obs)
+    bvel = np.array([0.1, np.nan, -0.2, 0.0])   # 3 valid, 1 NaN
+    bvels = np.array([0.01, 0.01, 0.01, 0.01])
+    A_o2, A_c2, d2 = _add_bottom_track(A_o, A_c, d, bvel, bvels,
+                                        botfac=1.0, velerr=0.05)
+    # Should append one row per finite bvel
+    n_finite = int(np.sum(np.isfinite(bvel)))
+    assert A_c2.shape[0] == n_obs + n_finite
+
+
+def test_add_barotropic_appends_one_row():
+    """Barotropic constraint adds exactly one row to each component."""
+    n_obs, n_zbins, n_se = 10, 5, 4
+    A_o = np.zeros((n_obs, n_zbins))
+    A_c = np.ones((n_obs, n_se))  # Use ones so col_scale is non-zero
+    d_u = np.zeros(n_obs)
+    d_v = np.zeros(n_obs)
+    dt = np.ones(n_se) * 100.0
+    A_ou, A_cu, du, A_ov, A_cv, dv = _add_barotropic(
+        A_o, A_c, d_u, A_o.copy(), A_c.copy(), d_v,
+        u_ship=0.5, v_ship=0.1, dt=dt, barofac=1.0,
+    )
+    assert A_cu.shape[0] == n_obs + 1
+    assert du[-1] != 0.0   # RHS = -u_ship * weight
