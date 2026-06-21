@@ -161,12 +161,12 @@ def test_add_smoothness_increases_rows():
 
 
 def test_add_smoothness_zero_smoofac_still_runs():
-    """smoofac=0 must not raise and must add at least boundary rows."""
+    """smoofac=0 disables all smoothness constraints — no rows added."""
     A_o = np.eye(6)
     A_c = np.zeros((6, 3))
     d = np.zeros(6)
     A_o2, A_c2, d2 = _add_smoothness(A_o, A_c, d, smoofac=0.0)
-    assert A_o2.shape[0] >= 6
+    assert A_o2.shape[0] == 6  # no rows added when smoofac=0
 
 
 def test_add_smoothness_two_column_matrix():
@@ -288,6 +288,46 @@ def test_compute_inverse_down_up_same_length():
     result = compute_inverse(se)
     assert result.u_do.shape == result.u.shape
     assert result.u_up.shape == result.u.shape
+
+
+def test_compute_inverse_with_bottom_track():
+    """Bottom-track branch in compute_inverse must not crash and produce a result."""
+    ens = _make_ens(n_bins=5, n_ens=60, noise=0.02)
+    # Set valid bottom-track on all ensembles
+    ens.bvel[:] = [0.05, -0.02, -0.5]
+    ens.bvels[:] = [0.02, 0.02, 0.02]
+    se = prepare_superensembles(ens, dz=10.0)
+    params = InverseParams(botfac=1.0, barofac=0.0, sadcpfac=0.0)
+    result = compute_inverse(se, params=params)
+    assert isinstance(result, InverseResult)
+    assert result.u.shape == result.z.shape
+
+
+def test_compute_inverse_with_barotropic():
+    """Barotropic branch in compute_inverse must not crash and produce a result."""
+    ens = _make_ens(n_bins=5, n_ens=60, noise=0.02)
+    se = prepare_superensembles(ens, dz=10.0)
+    params = InverseParams(botfac=0.0, barofac=1.0, sadcpfac=0.0)
+    result = compute_inverse(se, params=params, u_ship=0.1, v_ship=-0.05)
+    assert isinstance(result, InverseResult)
+    assert result.u.shape == result.z.shape
+
+
+def test_compute_inverse_with_sadcp():
+    """SADCP branch in compute_inverse must not crash and produce a result."""
+    ens = _make_ens(n_bins=5, n_ens=60, noise=0.02)
+    se = prepare_superensembles(ens, dz=10.0)
+    params = InverseParams(botfac=0.0, barofac=0.0, sadcpfac=1.0)
+    sadcp_z = np.array([50.0, 100.0, 150.0])
+    sadcp_u = np.array([0.1, 0.05, -0.02])
+    sadcp_v = np.array([-0.05, 0.02, 0.01])
+    sadcp_err = np.array([0.03, 0.03, 0.03])
+    result = compute_inverse(
+        se, params=params,
+        sadcp_z=sadcp_z, sadcp_u=sadcp_u, sadcp_v=sadcp_v, sadcp_err=sadcp_err,
+    )
+    assert isinstance(result, InverseResult)
+    assert result.u.shape == result.z.shape
 
 
 def test_add_sadcp_appends_rows():

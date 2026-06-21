@@ -564,7 +564,7 @@ class InverseParams:
     botfac: float = 1.0       # bottom-track constraint weight (0 = disable)
     sadcpfac: float = 1.0     # SADCP constraint weight (0 = disable); wired in Task 7
     barofac: float = 1.0      # GPS barotropic constraint weight (0 = disable)
-    smoofac: float = 0.0      # curvature smoothing weight (0 = minimal)
+    smoofac: float = 0.0      # curvature smoothing weight (0 = disabled, no rows added)
     velerr: float = 0.05      # nominal velocity error m/s
     weightmin: float = 0.05   # minimum observation weight threshold
     nav_error: float = 30.0   # navigation error m (for barvelerr computation)
