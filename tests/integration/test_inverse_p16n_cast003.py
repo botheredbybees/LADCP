@@ -3,6 +3,7 @@
 Requires TEST_DATA_DIR env var pointing to a directory containing a
 2015_P16N/ subdirectory with:
   003DL000.000   — Downlooker PD0 binary (beam coordinates, EX byte 0x04)
+  003UL000.000   — Uplooker PD0 binary (beam coordinates, EX byte 0x04)
   003_01.cnv     — CTD time-series (binary SBE)
   003.nc         — LDEO_IX processed reference output
 
@@ -47,6 +48,14 @@ def dl_path(test_data_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="module")
+def ul_path(test_data_dir: Path) -> Path:
+    p = test_data_dir / "003UL000.000"
+    if not p.exists():
+        pytest.skip(f"UL PD0 file not found: {p}")
+    return p
+
+
+@pytest.fixture(scope="module")
 def cnv_path(test_data_dir: Path) -> Path:
     p = test_data_dir / "003_01.cnv"
     if not p.exists():
@@ -63,106 +72,113 @@ def ref_path(test_data_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="module")
-def inverse_result(dl_path: Path, cnv_path: Path, test_data_dir: Path) -> InverseResult:
-    """Run full pipeline on P16N cast 003 raw data."""
+def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, test_data_dir: Path) -> InverseResult:
+    """Run full pipeline on P16N cast 003 raw data (DL + UL combined)."""
     from ladcp.ingestion.ctd import compute_ship_velocity
 
     rdi = load_rdi(dl_path)
     ctd = load_ctd(cnv_path)
 
-    # beam2earth: file is in beam coordinates (EX byte 0x04), need explicit transform.
-    # The rdi.u/v/w/e fields hold raw beam data for beam-coord files.
-    u_earth, v_earth, w_earth = beam2earth(
+    # --- Downlooker ---
+    u_dl, v_dl, w_dl = beam2earth(
         rdi.u, rdi.v, rdi.w, rdi.e,
         rdi.heading, rdi.pitch, rdi.roll,
-        THETA_DEG,
-        gimbaled=True,
+        THETA_DEG, gimbaled=True,
     )
     # Rotate from magnetic North to true North.  Our uvrot is CCW-positive, but
     # East magnetic declination is a CW heading shift, so we pass -DROT_DEG.
-    # Equivalent to MATLAB's uvrot(u, v, +drot) which uses CW-positive convention.
-    u_earth, v_earth = uvrot(u_earth, v_earth, -DROT_DEG)
+    u_dl, v_dl = uvrot(u_dl, v_dl, -DROT_DEG)
 
-    # assign_bin_depths returns positive-down z_m (nens,) and izm (nbin, nens).
-    z_m, izm_pos = assign_bin_depths(rdi, ctd, looker="down")
+    z_m, izm_dl_pos = assign_bin_depths(rdi, ctd, looker="down")
+    z_neg = -z_m
+    weight_dl = np.nanmean(rdi.corr.astype(np.float64), axis=2) / 128.0
 
-    # EnsembleData depth convention: negative = below surface.
-    z_neg = -z_m           # (nens,) negative down
-    izm_neg = -izm_pos     # (nbin, nens) negative down
+    # --- Uplooker ---
+    rdi_ul = load_rdi(ul_path)
+    u_ul, v_ul, w_ul = beam2earth(
+        rdi_ul.u, rdi_ul.v, rdi_ul.w, rdi_ul.e,
+        rdi_ul.heading, rdi_ul.pitch, rdi_ul.roll,
+        THETA_DEG, gimbaled=True,
+    )
+    u_ul, v_ul = uvrot(u_ul, v_ul, -DROT_DEG)
 
-    # Correlation-based weight: mean over 4 beams, normalised to 0–1.
-    weight = np.nanmean(rdi.corr.astype(np.float64), axis=2) / 128.0
+    # Bin depths for UL: bins extend above instrument (looker="up").
+    _, izm_ul_pos = assign_bin_depths(rdi_ul, ctd, looker="up")
+    weight_ul = np.nanmean(rdi_ul.corr.astype(np.float64), axis=2) / 128.0
 
-    # Bottom-track velocity in Earth frame.  btrack_vel_ms is (4, nens) beam-frame;
-    # apply the same beam→earth rotation used for water-track data.
+    # Time-align UL to DL: for each DL ensemble find the nearest UL ensemble.
+    ul_idx = np.argmin(
+        np.abs(rdi_ul.time_julian[:, None] - rdi.time_julian[None, :]), axis=0
+    )  # (n_dl_ens,)
+    u_ul_a = u_ul[:, ul_idx]
+    v_ul_a = v_ul[:, ul_idx]
+    w_ul_a = w_ul[:, ul_idx]
+    weight_ul_a = weight_ul[:, ul_idx]
+    izm_ul_neg_a = -izm_ul_pos[:, ul_idx]
+
+    # --- Merge DL + UL ---
+    # Combined array layout: [UL reversed (shallow→deep), DL (shallow→deep)]
+    # UL bin 0 is nearest the transducer (deepest); flipping puts shallowest first.
+    n_ul = rdi_ul.nbin
+    n_dl = rdi.nbin
+    u_comb = np.vstack([u_ul_a[::-1, :], u_dl])
+    v_comb = np.vstack([v_ul_a[::-1, :], v_dl])
+    w_comb = np.vstack([w_ul_a[::-1, :], w_dl])
+    weight_comb = np.vstack([weight_ul_a[::-1, :], weight_dl])
+    izm_comb = np.vstack([izm_ul_neg_a[::-1, :], -izm_dl_pos])
+
+    # izu[i] = combined-array row index for UL bin i.
+    #   UL bin 0 (deepest, nearest transducer)  → combined row n_ul-1
+    #   UL bin n_ul-1 (shallowest)              → combined row 0
+    izu = np.arange(n_ul - 1, -1, -1, dtype=int)
+    izd = np.arange(n_ul, n_ul + n_dl, dtype=int)
+
+    # --- Bottom track (DL only) ---
     bt_u_e, bt_v_e, bt_w_e = beam2earth(
-        rdi.btrack_vel_ms[0],
-        rdi.btrack_vel_ms[1],
-        rdi.btrack_vel_ms[2],
-        rdi.btrack_vel_ms[3],
-        rdi.heading,
-        rdi.pitch,
-        rdi.roll,
-        THETA_DEG,
-        gimbaled=True,
+        rdi.btrack_vel_ms[0], rdi.btrack_vel_ms[1],
+        rdi.btrack_vel_ms[2], rdi.btrack_vel_ms[3],
+        rdi.heading, rdi.pitch, rdi.roll,
+        THETA_DEG, gimbaled=True,
     )
     bt_u_e, bt_v_e = uvrot(bt_u_e, bt_v_e, -DROT_DEG)
-    bvel = np.stack([bt_u_e, bt_v_e, bt_w_e], axis=1)  # (nens, 3) Earth frame
-    bvels = np.full_like(bvel, 0.02)                      # 2 cm/s nominal std
-    hbot = np.nanmean(rdi.btrack_range_m, axis=0)  # (nens,) mean of 4-beam ranges
+    bvel = np.stack([bt_u_e, bt_v_e, bt_w_e], axis=1)
+    bvels = np.full_like(bvel, 0.02)
+    hbot = np.nanmean(rdi.btrack_range_m, axis=0)
 
-    # GPS nav interpolated onto ensemble times
+    # --- GPS nav ---
     if ctd.lat is not None:
-        slat = np.interp(
-            rdi.time_julian, ctd.time_julian, ctd.lat, left=np.nan, right=np.nan
-        )
-        slon = np.interp(
-            rdi.time_julian, ctd.time_julian, ctd.lon, left=np.nan, right=np.nan
-        )
+        slat = np.interp(rdi.time_julian, ctd.time_julian, ctd.lat, left=np.nan, right=np.nan)
+        slon = np.interp(rdi.time_julian, ctd.time_julian, ctd.lon, left=np.nan, right=np.nan)
         u_ship, v_ship = compute_ship_velocity(ctd.lat, ctd.lon, ctd.time_julian)
     else:
         slat = np.full(rdi.nens, np.nan)
         slon = np.full(rdi.nens, np.nan)
         u_ship, v_ship = 0.0, 0.0
 
-    # SADCP fixture (optional — skipped gracefully if not generated yet)
+    # --- SADCP (optional) ---
     sadcp_path = test_data_dir / "sadcp_003.npz"
     if sadcp_path.exists():
         npz = np.load(sadcp_path)
-        sadcp_z, sadcp_u, sadcp_v, sadcp_err = (
-            npz["z"], npz["u"], npz["v"], npz["err"]
-        )
+        sadcp_z, sadcp_u, sadcp_v, sadcp_err = npz["z"], npz["u"], npz["v"], npz["err"]
     else:
         sadcp_z = sadcp_u = sadcp_v = sadcp_err = None
 
     ens = EnsembleData(
-        u=u_earth,
-        v=v_earth,
-        w=w_earth,
-        weight=weight,
-        izm=izm_neg,
-        z=z_neg,
+        u=u_comb, v=v_comb, w=w_comb, weight=weight_comb,
+        izm=izm_comb, z=z_neg,
         time_jul=rdi.time_julian,
-        bvel=bvel,
-        bvels=bvels,
-        hbot=hbot,
-        izd=np.arange(rdi.nbin),
-        izu=np.array([], dtype=int),
-        slat=slat,
-        slon=slon,
+        bvel=bvel, bvels=bvels, hbot=hbot,
+        izd=izd, izu=izu,
+        slat=slat, slon=slon,
     )
 
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
-
     se = prepare_superensembles(ens, dz=16.0)
     return compute_inverse(
         se,
-        u_ship=u_ship,
-        v_ship=v_ship,
-        sadcp_z=sadcp_z,
-        sadcp_u=sadcp_u,
-        sadcp_v=sadcp_v,
-        sadcp_err=sadcp_err,
+        u_ship=u_ship, v_ship=v_ship,
+        sadcp_z=sadcp_z, sadcp_u=sadcp_u,
+        sadcp_v=sadcp_v, sadcp_err=sadcp_err,
     )
 
 
