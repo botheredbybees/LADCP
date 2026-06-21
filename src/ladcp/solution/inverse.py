@@ -514,7 +514,7 @@ class InverseParams:
     """Tuning parameters for compute_inverse() (getinv.m ps struct)."""
     dz: float = 10.0          # depth bin size m
     botfac: float = 1.0       # bottom-track constraint weight (0 = disable)
-    sadcpfac: float = 1.0     # SADCP constraint weight (0 = disable)
+    sadcpfac: float = 1.0     # SADCP constraint weight (0 = disable); wired in Task 7
     barofac: float = 1.0      # GPS barotropic constraint weight (0 = disable)
     smoofac: float = 0.0      # curvature smoothing weight (0 = minimal)
     velerr: float = 0.05      # nominal velocity error m/s
@@ -631,6 +631,8 @@ def compute_inverse(
     _BAROCLINIC_FAC = 10.0  # MATLAB: baroclinfac = 10 (large = forces zero mean)
 
     def _solve_subset(idx: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        # idx rows are from the pre-augmentation observation block; safe because
+        # constraint rows are appended after _apply_weights returns idx_down/idx_up.
         A_os = A_o_u[idx, :n_zbins]
         A_cs = A_c_u[idx, :]
         ds_u = dw_u[idx]
