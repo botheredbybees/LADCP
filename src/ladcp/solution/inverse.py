@@ -495,28 +495,39 @@ def _add_barotropic(
     v_ship: float,
     dt: np.ndarray,
     barofac: float = 1.0,
+    nav_error: float = 30.0,
+    velerr: float = 0.05,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Constrain time-mean CTD velocity = GPS-derived ship velocity (lainbaro).
 
     Appends one row: sum(A_ctd * dt / T) = u_ship.
-    Weight scaled by sqrt(sum of CTD column norms) to balance the system.
+
+    Weight matches MATLAB getinv.m:
+      barvelerr = 2 * nav_error / T          (velocity uncertainty from GPS positioning)
+      fac_nav   = velerr / barvelerr         ("normalized barotropic constraint weight")
+      fac       = sqrt(sum(|A_ctd|))         (column-sum scale, MATLAB lainbaro fac)
+      row_weight = barofac * fac_nav * fac
     """
     T = float(dt.sum())
-    n_se = A_ctd_u.shape[1]
-    col_scale = np.sqrt(np.abs(A_ctd_u).sum(axis=0))  # (n_se,)
-    fac = float(np.sqrt(np.sum(col_scale)))
+    # MATLAB: barvelerr = 2 * nav_error / dt_profile  (factor of 2 = error at both endpoints)
+    barvelerr = 2.0 * nav_error / T
+    fac_nav = velerr / barvelerr          # "normalized barotropic constraint weight"
+    # MATLAB lainbaro: fac = sqrt(sum(abs(Ac)))  — sqrt of total absolute sum (no inner sqrt)
+    fac = float(np.sqrt(np.abs(A_ctd_u).sum()))
 
-    # Barotropic row: dt[e]/T per column, scaled
-    row_c = dt / T * barofac * fac
+    w = barofac * fac_nav * fac
+
+    # Barotropic row: dt[e]/T per column, weighted
+    row_c = dt / T * w
     row_o = np.zeros(A_ocean_u.shape[1])
 
     A_ocean_u2 = np.vstack([A_ocean_u, row_o[np.newaxis, :]])
     A_ctd_u2 = np.vstack([A_ctd_u, row_c[np.newaxis, :]])
-    d_u2 = np.concatenate([d_u, [-u_ship * barofac * fac]])
+    d_u2 = np.concatenate([d_u, [-u_ship * w]])
 
     A_ocean_v2 = np.vstack([A_ocean_v, row_o[np.newaxis, :]])
     A_ctd_v2 = np.vstack([A_ctd_v, row_c[np.newaxis, :]])
-    d_v2 = np.concatenate([d_v, [-v_ship * barofac * fac]])
+    d_v2 = np.concatenate([d_v, [-v_ship * w]])
 
     return A_ocean_u2, A_ctd_u2, d_u2, A_ocean_v2, A_ctd_v2, d_v2
 
@@ -672,6 +683,7 @@ def compute_inverse(
             A_o_u, A_c_u, dw_u, A_o_v, A_c_v, dw_v,
             u_ship=float(u_ship), v_ship=float(v_ship),  # type: ignore[arg-type]
             dt=se.dt, barofac=params.barofac,
+            nav_error=params.nav_error, velerr=params.velerr,
         )
 
     # --- Zero-mean fallback when no external constraint ---

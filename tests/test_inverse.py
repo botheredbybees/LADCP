@@ -219,6 +219,44 @@ def test_add_barotropic_appends_one_row():
     assert du[-1] != 0.0   # RHS = -u_ship * weight
 
 
+def test_add_barotropic_weight_formula():
+    """Row weight matches MATLAB lainbaro: barvelerr=2*nav_error/T, fac=sqrt(sum|Ac|).
+
+    For cast-003-like inputs: T=11157s, nav_error=30m, velerr=0.05
+    barvelerr = 2*30/11157 ≈ 0.005378 m/s  (matches 003.nc log)
+    fac_nav   = velerr/barvelerr ≈ 9.30
+    fac       = sqrt(sum(|A_ctd|)) = sqrt(40) for ones(10,4)
+    RHS       = -u_ship * barofac * fac_nav * fac
+    """
+    import math
+    n_obs, n_zbins, n_se = 10, 5, 4
+    A_o = np.zeros((n_obs, n_zbins))
+    A_c = np.ones((n_obs, n_se))
+    d_u = np.zeros(n_obs)
+    d_v = np.zeros(n_obs)
+    # Use T = 11157 s (11 SEs * ~1014 s each — cast-003 scale)
+    T = 11157.0
+    dt = np.full(n_se, T / n_se)
+
+    nav_error = 30.0
+    velerr = 0.05
+    u_ship = 1.0  # 1 m/s for easy verification
+
+    A_ou, A_cu, du, A_ov, A_cv, dv = _add_barotropic(
+        A_o, A_c, d_u, A_o.copy(), A_c.copy(), d_v,
+        u_ship=u_ship, v_ship=0.0, dt=dt, barofac=1.0,
+        nav_error=nav_error, velerr=velerr,
+    )
+
+    barvelerr = 2.0 * nav_error / T          # ≈ 0.005378
+    fac_nav = velerr / barvelerr             # ≈ 9.298
+    fac = math.sqrt(float(np.abs(A_c).sum()))  # sqrt(40) ≈ 6.325
+    expected_rhs = -u_ship * fac_nav * fac
+
+    assert abs(barvelerr - 0.005378) < 1e-5, f"barvelerr={barvelerr}"
+    assert abs(du[-1] - expected_rhs) < 1e-10, f"du[-1]={du[-1]}, expected={expected_rhs}"
+
+
 def test_solve_lsq_identity():
     """Identity system must recover exact solution."""
     from ladcp.solution.inverse import _solve_lsq
