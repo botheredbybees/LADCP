@@ -131,15 +131,17 @@ def prepare_superensembles(
     slon_se = np.full(n_se, np.nan)
 
     for im, i1 in enumerate(windows):
-        u_win = ens.u[:, i1]   # (n_bins, n_win) — no weight masking here
-        v_win = ens.v[:, i1]   # (MATLAB uses w=d.weight*0+1 = all ones)
-        w_win = ens.w[:, i1]
+        wt_win = ens.weight[:, i1]  # (n_bins, n_win) — NaN where sidelobe-masked
+        # Mask velocities where weight is NaN (edit_sidelobes sets weight=NaN for bad
+        # bins but does not zero the velocity arrays; apply here to exclude them).
+        nan_mask = np.isnan(wt_win)
+        u_win = np.where(nan_mask, np.nan, ens.u[:, i1])
+        v_win = np.where(nan_mask, np.nan, ens.v[:, i1])
+        w_win = np.where(nan_mask, np.nan, ens.w[:, i1])
 
         # Time-average each bin over the window.
         # MATLAB prepinv.m uses medianan(X, iav) with iav=round(n_win/2), which
-        # averages ~all sorted elements — effectively a mean, not a median.
-        # The per-time reference subtraction/re-addition cancels exactly, so the
-        # formula reduces to mean(u_win, axis=time) per bin.
+        # averages all sorted elements — equivalent to nanmean.
         ru[:, im] = np.nanmean(u_win, axis=1)
         rv[:, im] = np.nanmean(v_win, axis=1)
         rw[:, im] = np.nanmean(w_win, axis=1)
