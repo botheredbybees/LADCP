@@ -6,92 +6,122 @@ Context for physical oceanographers evaluating or contributing to this toolkit.
 
 A Python re-implementation of the LDEO LADCP processing workflow, targeting the same outputs as the MATLAB software used for GO-SHIP and similar hydrographic cruises. The goal is to reproduce known-good processed results numerically before adding any new capabilities.
 
-The target validation dataset is I7N 2018, cast 002, processed by A.M. Thurnherr (LDEO). The reference output `test_data/data/002.nc` is the benchmark this software must match.
+The validation dataset is **2015 P16N, cast 003**, processed by A.M. Thurnherr (LDEO). The reference output `test_data/2015_P16N/003.nc` is the benchmark this software currently works against.
 
-## What Is Implemented (v0.1.0)
+## What Is Implemented
 
-**Ingestion only.** The parser reads Teledyne RDI Workhorse PD0 binary files (`.000` format) and returns a Python object containing:
+The full processing pipeline is implemented end-to-end:
 
-- Velocity matrices (u, v, w, error) — (nbin × nens) arrays, m/s, NaN where instrument flagged bad
-- Heading, pitch, roll, temperature, sound velocity — (nens,) arrays
-- Ensemble timestamps — (nens,) Julian days, midnight-based (matching MATLAB `julian.m`)
-- Echo intensity, correlation, percent-good — (nbin × nens × 4beam) arrays
-- Bottom-track ranges and velocities — (4beam × nens)
+**Ingestion:**
+- `load_rdi()` — reads Teledyne RDI Workhorse PD0 binary files (`.000`)
+- `load_ctd()` — reads SeaBird CNV files (ASCII and binary formats), parsing pressure, temperature, salinity, and optionally GPS lat/lon
+- `assign_bin_depths()` — converts ADCP bin ranges to absolute water depths using CTD pressure
+- `compute_ship_velocity()` — derives ship velocity from GPS position time series
 
-Nothing downstream of ingestion exists yet: no coordinate transforms, no shear calculation, no velocity inversion, no CTD integration, no QA plots.
+**Coordinate transforms:**
+- `beam2earth()` — converts beam-coordinate ADCP velocities to Earth frame using heading, pitch, roll; supports the gimbaled heading correction (Janus geometry, RDI Workhorse convention)
+- `uvrot()` — rotates East/North velocities for magnetic declination
+
+**Quality editing:**
+- `edit_sidelobes()` — masks ADCP bins contaminated by acoustic sidelobes from the surface and bottom (LDEO `edit_data.m` convention)
+- `edit_large_velocities()` — removes bins with horizontal speed > 2.5 m/s
+- `edit_w_outliers()` — removes bins where vertical velocity deviates anomalously from near-instrument reference bins
+
+**Inverse velocity solution:**
+- `prepare_superensembles()` — depth-window averaging into super-ensembles with reference-bin subtraction; replicates `prepinv.m`
+- `compute_inverse()` — constrained least-squares inversion producing `u(z)`, `v(z)` profiles; replicates `getinv.m`; supports GPS barotropic constraint, shipboard ADCP (SADCP) constraint, acoustic bottom-track constraint, and smoothness regularisation
 
 ## MATLAB Equivalents
 
 | MATLAB (LDEO_IX) | Python (this toolkit) | Status |
 |---|---|---|
-| `loadrdi.m` — read PD0 binary into structs `d`, `p`, `de` | `load_rdi(path)` → `RDIData` | **Done** |
-| `janus5beam2earth()` (ADCPtools) — beam→Earth transform | `janus5beam2earth()` | Stub |
-| `getshear2.m` — compute shear profiles | `compute_shear()` → `ShearProfile` | **Done** |
-| `getinv.m` / `prepinv.m` — velocity inversion | (not yet designed) | Planned |
-| `getbtrack.m` — bottom-track processing | (not yet designed) | Planned |
-| `fixcompass.m` / `checktilt.m` — heading/tilt corrections | (not yet designed) | Planned |
-| `loadctdprof.m` / `loadsadcp.m` — ancillary data | (not yet designed) | Planned |
-| `ladcp2cdf.m` — NetCDF output | (not yet designed) | Planned |
+| `loadrdi.m` — read PD0 binary | `load_rdi()` → `RDIData` | Done |
+| `janus5beam2earth()` (ADCPtools) | `beam2earth()` | Done (gimbaled) |
+| `edit_data.m` — sidelobe / velocity editing | `edit_sidelobes()`, `edit_large_velocities()`, `edit_w_outliers()` | Done |
+| `getshear2.m` — shear profiles | `compute_shear()` → `ShearProfile` | Done |
+| `prepinv.m` — super-ensemble formation | `prepare_superensembles()` | Done |
+| `getinv.m` — inverse solver | `compute_inverse()` | Done (RMSE work in progress) |
+| `loadctdprof.m` | `load_ctd()`, `assign_bin_depths()` | Done |
+| `loadsadcp.m` | SADCP fixture loader (tests only) | Done |
+| `getbtrack.m` — bottom-track processing | Integrated into `compute_inverse()` | Done |
+| `fixcompass.m` / `checktilt.m` | `uvrot()` (declination only) | Partial |
+| `ladcp2cdf.m` — NetCDF output | Not yet implemented | Planned |
 
 The Perl-based LADCP_w software (vertical velocity, VKE) is a separate system not yet targeted.
+
+## Validation Status
+
+### Current numbers (P16N 2015, cast 003)
+
+The inverse solver is running and producing profiles for the full 4500 m cast.
+
+**Overall:** u RMSE = 0.072 m/s (target: < 0.05 m/s for GO-SHIP quality)
+
+| Depth range | u correlation | Notes |
+|---|---|---|
+| 0–500 m | +0.91 | Good |
+| 500–1000 m | +0.89 | Good |
+| 1000–1500 m | **−0.39** | Anti-correlated — under investigation |
+| 1500–2000 m | **−0.41** | Anti-correlated — under investigation |
+| 2000–3000 m | +0.20 | Moderate |
+| 3000–4500 m | −0.28 | Noisy |
+
+The anti-correlation at 1000–2000 m is the dominant driver of excess RMSE. This depth range corresponds to a portion of the cast where the CTD instrument appears to be drifting rapidly eastward (u_instrument ≈ +0.10–0.15 m/s) relative to the ocean. The inverse solver is not correctly separating instrument motion from ocean velocity at those depths.
+
+**What has been ruled out:** GPS constraint weighting (removing GPS does not change the anti-correlation), bottom-track constraint, adaptive velocity error weighting.
+
+**What is suspected:** A difference in super-ensemble formation between MATLAB (827 super-ensembles, inferred dz ≈ 8 m) and Python (524 super-ensembles, dz = 16 m hardcoded). This requires MATLAB's intermediate arrays (`di.ru`, `di.izm`) for direct comparison.
+
+See `docs/superpowers/plans/2026-06-22-rmse-closure.md` for the full investigation writeup and what data is needed to proceed.
 
 ## Key Scientific Conventions
 
 ### DL and UL
 
-The downlooker (DL) and uplooker (UL) are two Workhorse ADCPs co-mounted on the CTD rosette, looking down and up respectively. Each has its own PD0 file (e.g. `003DL000.000` and `003UL000.000`). The `load_rdi()` function reads one file at a time — call it twice for a DL/UL pair.
+The downlooker (DL) and uplooker (UL) are two Workhorse ADCPs co-mounted on the CTD rosette, looking down and up respectively. Each has its own PD0 file (e.g. `003DL000.000` and `003UL000.000`). Load each with `load_rdi()` and combine before passing to the inverse solver.
+
+The UL is mounted face-up (inverted). Its pitch axis reads the **opposite sign** from the DL — pass `-rdi_ul.pitch` to `beam2earth()`.
 
 ### Timing
 
-Clock drift between the DL and UL, and between either ADCP and the CTD, is a first-class processing concern. The legacy code tracks `params.timoff` and `params.timoff_uplooker` explicitly. Time in `RDIData` is stored as Julian days using the MATLAB midnight convention — not the astronomical noon-based Julian Day Number. This matters when computing DL/UL time overlaps.
+Clock drift between the DL and UL, and between either ADCP and the CTD, is a first-class processing concern. The current implementation aligns UL to DL by nearest-timestamp lookup. The MATLAB parameters `timoff` and `timoff_uplooker` for explicit clock-drift correction are not yet implemented.
 
 ### Coordinate frames
 
-`RDIData.u` and `.v` are East and North *only if* the instrument was configured for Earth-frame output (RDI EX command `EX=11xxx`). GO-SHIP LADCP casts are normally configured this way, but the parser does not verify this — it reads whatever the instrument recorded. If you load a file from an instrument configured for beam-frame output, `u` contains beam 1 velocities, not East velocities.
+`RDIData.u/v` are in beam coordinates from the raw PD0 file. The `beam2earth()` call converts to Earth frame using heading, pitch, and roll. Magnetic declination correction requires a separate `uvrot()` call with the local East declination.
 
-The coordinate transform step (not yet implemented) will apply the Janus geometry, heading, pitch, and roll to convert from instrument frame to Earth frame for instruments not already in Earth-frame mode, and optionally apply tilt corrections (gimbaled) and bin-mapping.
+### Super-ensembles
 
-### Velocity and bin geometry
+The inverse solver works on "super-ensembles" — depth-window averages that group raw pings spanning ≈16 m of CTD depth change. Within each window, the velocity is referenced to the two DL bins closest to the transducer face, removing the mean instrument velocity. What remains (the super-ensemble relative velocity `ru`) is approximately `u_ocean(z) − mean_u_instrument(window)`. The full-cast inverse then jointly solves for `u_ocean(z)` and `u_instrument(t)` across all windows.
 
-The RDI Workhorse 300 kHz uses 4 Janus beams at 20° from vertical. Standard GO-SHIP configuration: 8 m bins, 25 bins, first bin centre ~8 m from the transducer face. `RDIData` carries `blen_m`, `nbin`, `dist_m` parsed directly from the fixed leader — no assumptions needed.
+### Boundary conditions
 
-### Bottom track
+The inverse solver accepts three types of external velocity constraints:
 
-Bottom-track data is in `RDIData.btrack_range_m` (4-beam slant range, m) and `btrack_vel_ms` (4-beam velocity, m/s). Not all ensembles have valid BT data — the instrument only returns BT when the acoustic return is strong enough. `NaN` in these arrays means no return in that ensemble. The BT velocities serve as an absolute velocity boundary condition in the inversion.
+- **Bottom-track**: ADCP acoustic return from the sea floor gives the instrument's absolute velocity near the bottom. The DL bottom-track is the strongest constraint and is enabled by default.
+- **GPS barotropic**: GPS position fixes give the time-mean ship velocity over the cast. This constrains the depth-mean of `u_instrument` and is the primary absolute reference for the deep water column.
+- **SADCP**: Shipboard ADCP near-surface measurements (0–300 m typically) constrain `u_ocean` in the surface layer and are used as an additional reference.
 
-## Validation Status
+## Data Requirements for Continued Validation
 
-The parser passes **sanity checks** against 2015 P16N cast 003:
-- Ensemble count within expected range (~8970 for a ~3.6-hour cast)
-- Bin geometry matches RDI 300 kHz Workhorse specification
-- Headings in [0°, 360°]
-- >50% of velocity cells are finite
-- Time is monotonically increasing
-- DL and UL time spans overlap (same cast, same wire)
-- Some bottom-track data present
+To resolve the 1000–2000 m anti-correlation, the following MATLAB intermediate arrays are needed for P16N cast 003:
 
-It has **not yet been numerically validated** against the reference output `test_data/data/002.nc`. That validation — checking that processed u/v profiles match to within documented tolerance bands — is the next milestone and requires completing the transform and solution layers first.
+```matlab
+% Run in MATLAB after processing cast 003 with LDEO_IX
+save('di_cast003.mat', 'di');   % prepinv.m output
+save('dr_cast003.mat', 'dr');   % getinv.m output
+```
 
-## The Two Reference Software Systems
-
-This project targets two distinct MATLAB/Perl pipelines:
-
-**LDEO_IX (MATLAB)** — processes horizontal velocity (u, v). This is the primary GO-SHIP processing tool. Source in `docs/legacy/LDEO_IX/` (if present) and referenced throughout `docs/legacy/loadrdi.m`, `getshear2.m`, etc.
-
-**LADCP_w (Perl + ANTSlib)** — processes vertical velocity (w) and VKE (vertical kinetic energy). Uses Thurnherr's ANTS framework. Configuration via `ProcessingParams` files (see `test_data/ancillary/`). This system is documented in `docs/legacy/ANTSlib/` but is not yet targeted for Python re-implementation.
-
-The two systems use different CTD time-series resolutions: LDEO_IX uses a 1 Hz CTD, LADCP_w uses 6 Hz. Both reference `test_data/ancillary/` for the processing parameter conventions.
+Key variables: `di.ru`, `di.rv` (super-ensemble relative velocities, all bins × all SEs), `di.izm` (bin depths), `dr.uctd`, `dr.zctd` (instrument velocity time series).
 
 ## Roadmap
 
-1. Complete ingestion validation (reproduce `002.nc` profiles to within tolerance)
-2. Implement Janus beam→Earth coordinate transform (`janus5beam2earth`)
-3. Implement shear-based solution (`getshear2` equivalent)
-4. Implement inverse/velocity-based solution (`getinv` equivalent)
-5. CTD and SADCP ancillary data loaders
-6. QA diagnostics and plots (reproducing the 10 diagnostic PDFs in `test_data/plots/`)
-7. End-to-end CLI (`ladcp process <cast>`)
-
-## Contributing Scientific Validation
-
-The most useful contribution right now is numerical validation: run the LDEO_IX MATLAB software on the I7N 2018 cast 002 data and document the intermediate arrays (shear profiles, bottom-track time series, final u/v profiles) so the Python implementation can be validated step by step. Raw PD0 files for cast 002 are not currently in the repository — contact the maintainer about data access.
+1. ~~Ingestion~~ ✓
+2. ~~Coordinate transforms~~ ✓
+3. ~~QA editing~~ ✓
+4. ~~Shear-based solution~~ ✓
+5. ~~Inverse solution (implemented; RMSE closure in progress)~~ ⚠
+6. NetCDF output (`ladcp2cdf.m` equivalent) — Planned
+7. QA diagnostics and plots — Planned
+8. End-to-end CLI (`ladcp process <cast>`) — Planned
+9. RMSE < 0.05 m/s on P16N cast 003 — **Blocked on MATLAB intermediate arrays**
