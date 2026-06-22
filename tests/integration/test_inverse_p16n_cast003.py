@@ -95,9 +95,13 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
 
     # --- Uplooker ---
     rdi_ul = load_rdi(ul_path)
+    # UL is mounted face-up (inverted).  The pitch sensor reads the opposite sign
+    # from the DL for the same physical tilt, so negate pitch before beam2earth.
+    # The gimbaled heading correction uses sin(pitch)*sin(roll); wrong pitch sign
+    # corrupts the Earth-frame rotation (confirmed by orientation sweep diag).
     u_ul, v_ul, w_ul = beam2earth(
         rdi_ul.u, rdi_ul.v, rdi_ul.w, rdi_ul.e,
-        rdi_ul.heading, rdi_ul.pitch, rdi_ul.roll,
+        rdi_ul.heading, -rdi_ul.pitch, rdi_ul.roll,
         THETA_DEG, gimbaled=True,
     )
     u_ul, v_ul = uvrot(u_ul, v_ul, -DROT_DEG)
