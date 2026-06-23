@@ -10,7 +10,6 @@ AN-46 (pressure).
 from __future__ import annotations
 
 import re
-import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 import defusedxml.ElementTree as ET
@@ -239,22 +238,22 @@ def parse_hex_header(path: str | Path) -> HexHeader:
 # Calibration equations (AN-04 temperature, AN-14 conductivity, AN-46 pressure)
 # ---------------------------------------------------------------------------
 
-# Clock and gate constants for SBE9plus frequency channels (AN-69).
-# SBE9plus: f_clock = 24 MHz, N_cycles = 210 for T/C channels.
-_FREQ_CLOCK_HZ = 24_000_000.0
-_FREQ_N_CYCLES = 210
+def _freq_word_to_hz(word: int) -> float:
+    """Convert a 24-bit SBE fixed-point frequency word to Hz.
 
-
-def _count_to_freq(count: int) -> float:
-    """Convert 24-bit period counter to oscillation frequency in Hz."""
-    if count == 0:
+    Encoding: b0*256 + b1 + b2/256 (big-endian, 8 fractional bits).
+    """
+    if word == 0:
         return np.nan
-    return (_FREQ_CLOCK_HZ * _FREQ_N_CYCLES) / count
+    b0 = (word >> 16) & 0xFF
+    b1 = (word >> 8) & 0xFF
+    b2 = word & 0xFF
+    return b0 * 256.0 + b1 + b2 / 256.0
 
 
 def _temperature(count: int, coeffs: XmlconCoeffs, primary: bool = True) -> float:
-    """Decode a 24-bit T frequency count to ITS-90 temperature (°C)."""
-    f = _count_to_freq(count)
+    """Decode a 24-bit T frequency word to ITS-90 temperature (°C)."""
+    f = _freq_word_to_hz(count)
     if not np.isfinite(f) or f <= 0:
         return np.nan
     G, H, I, J, f0 = (
@@ -270,8 +269,8 @@ def _temperature(count: int, coeffs: XmlconCoeffs, primary: bool = True) -> floa
 def _conductivity(
     count: int, T: float, P_dbar: float, coeffs: XmlconCoeffs, primary: bool = True
 ) -> float:
-    """Decode a 24-bit C frequency count to conductivity (mS/cm)."""
-    f = _count_to_freq(count)
+    """Decode a 24-bit C frequency word to conductivity (mS/cm)."""
+    f = _freq_word_to_hz(count)
     if not np.isfinite(f) or f <= 0:
         return np.nan
     G, H, I, J, CPcor, CTcor = (
@@ -283,34 +282,32 @@ def _conductivity(
     return (G + H * fk**2 + I * fk**3 + J * fk**4) / (1.0 + CTcor * T + CPcor * P_dbar)
 
 
-def _pressure(raw_bytes: bytes, coeffs: XmlconCoeffs) -> float:
-    """Decode 3-byte Digiquartz pressure block to pressure in dbar.
+def _pressure(f_p: float, ptcomp: int, coeffs: XmlconCoeffs) -> float:
+    """Decode Digiquartz oscillation frequency to pressure in dbar (AN-46).
 
-    Byte layout: upper 12 bits = PT_raw (pressure temperature),
-                 lower 12 bits = P_raw (pressure oscillation count).
-    See SBE Application Note 46 for the full Digiquartz polynomial.
+    Parameters
+    ----------
+    f_p:
+        Digiquartz pressure oscillation frequency in Hz (from bytes 6-8).
+    ptcomp:
+        12-bit AD590 pressure-temperature ADC count (from voltage word 0,
+        lower 12 bits of bytes 15-17).
     """
-    word = int.from_bytes(raw_bytes, "big")
-    PT_raw = (word >> 12) & 0xFFF
-    P_raw = word & 0xFFF
-
-    T_u = coeffs.p_AD590M * PT_raw + coeffs.p_AD590B  # AD590 temp, °C
-
-    U = (
+    if f_p <= 0:
+        return np.nan
+    Tp = 1e6 / f_p  # measured period, µs
+    T_u = coeffs.p_AD590M * ptcomp + coeffs.p_AD590B  # AD590 temperature, °C
+    T0 = (
         coeffs.p_T1
         + coeffs.p_T2 * T_u
         + coeffs.p_T3 * T_u**2
         + coeffs.p_T4 * T_u**3
         + coeffs.p_T5 * T_u**4
-    )
+    )  # reference period, µs
     Y = 1.0 + coeffs.p_D1 * T_u + coeffs.p_D2 * T_u**2
     C_coef = coeffs.p_C1 + coeffs.p_C2 * T_u + coeffs.p_C3 * T_u**2
-
-    if P_raw == 0:
-        return np.nan
-    ratio = (U / P_raw) ** 2
+    ratio = (T0 / Tp) ** 2
     P_psia = C_coef * (1.0 - ratio) * (1.0 - Y * (1.0 - ratio))
-    # Convert psia to dbar (1 psia ≈ 0.68947572932 dbar, subtract 1 atm = 14.6959 psia)
     return max((P_psia - 14.6959) * 0.68947572932, 0.0)
 
 
@@ -318,11 +315,13 @@ def _pressure(raw_bytes: bytes, coeffs: XmlconCoeffs) -> float:
 # GPS byte offsets and load_sbe_hex()
 # ---------------------------------------------------------------------------
 
-# GPS encoding: SBE11plus V5.x stores lat/lon as signed int32 scaled by 1e-7
-# (confirmed via Task 2 discovery: float32 interpretation produced garbage).
-# Validated at runtime — values outside [-90,90] / [-180,180] become NaN.
-_LAT_OFFSET = 32
-_LON_OFFSET = 36
+# SBE11plus V5.x GPS format (bytes 30–36 of a 44-byte scan):
+#   bytes 30–32: lat as unsigned 24-bit int / 50000 → decimal degrees
+#   bytes 33–35: lon as unsigned 24-bit int / 50000 → decimal degrees
+#   byte  36   : sign flags (0x80 = South, 0x40 = West)
+_GPS_LAT_OFFSET = 30
+_GPS_LON_OFFSET = 33
+_GPS_SIGN_OFFSET = 36
 
 
 def load_sbe_hex(
@@ -384,32 +383,36 @@ def load_sbe_hex(
 
         scan = bytes.fromhex(hex_line[: n_bytes * 2])
 
-        # Decode T1, C1, and P (P needed for C calibration)
+        # Channel layout: T1(0-2), C1(3-5), P(6-8), T2(9-11), C2(12-14)
         count_t1 = int.from_bytes(scan[0:3], "big")
         count_c1 = int.from_bytes(scan[3:6], "big")
-        count_p = scan[12:15]
+        count_p = int.from_bytes(scan[6:9], "big")
 
+        # ptcomp: AD590 pressure temperature — lower 12 bits of voltage word 0
+        ptcomp = int.from_bytes(scan[15:18], "big") & 0xFFF
+
+        f_p = _freq_word_to_hz(count_p)
         T1 = _temperature(count_t1, coeffs, primary=True)
-        P = _pressure(count_p, coeffs)
+        P = _pressure(f_p, ptcomp, coeffs)
         C1 = _conductivity(count_c1, T1, P, coeffs, primary=True)
 
         temp[i] = T1
         pressure[i] = P
         cond[i] = C1
 
-        # GPS lat/lon: try int32 scaled by 1e-7, validate range
-        if hdr.nmea_pos_added and n_bytes >= _LON_OFFSET + 4:
-            try:
-                lat_raw = struct.unpack(">i", scan[_LAT_OFFSET: _LAT_OFFSET + 4])[0]
-                lon_raw = struct.unpack(">i", scan[_LON_OFFSET: _LON_OFFSET + 4])[0]
-                lat_val = lat_raw * 1e-7
-                lon_val = lon_raw * 1e-7
-                if -90.0 <= lat_val <= 90.0:
-                    lat[i] = lat_val
-                if -180.0 <= lon_val <= 180.0:
-                    lon[i] = lon_val
-            except struct.error:
-                pass
+        # GPS: 3-byte unsigned lat, 3-byte unsigned lon, 1-byte sign flags
+        if hdr.nmea_pos_added and n_bytes >= _GPS_SIGN_OFFSET + 1:
+            lat_raw = int.from_bytes(scan[_GPS_LAT_OFFSET: _GPS_LAT_OFFSET + 3], "big")
+            lon_raw = int.from_bytes(scan[_GPS_LON_OFFSET: _GPS_LON_OFFSET + 3], "big")
+            sign = scan[_GPS_SIGN_OFFSET]
+            lat_val = lat_raw / 50000.0
+            lon_val = lon_raw / 50000.0
+            if sign & 0x80:
+                lat_val = -lat_val
+            if sign & 0x40:
+                lon_val = -lon_val
+            lat[i] = lat_val
+            lon[i] = lon_val
 
     # Salinity (requires gsw; set to NaN array if unavailable)
     salinity = np.full(n_scans, np.nan, dtype=np.float64)

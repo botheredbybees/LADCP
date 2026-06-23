@@ -179,17 +179,28 @@ def s4p_coeffs(xmlcon_file: Path) -> XmlconCoeffs:
 
 
 def test_temperature_returns_float(s4p_coeffs: XmlconCoeffs) -> None:
-    # Non-zero count must produce a finite float
+    # scan[0:3] = 0x188A64 → f ≈ 6282 Hz → T ≈ 33 °C (warm on-deck reading)
     T = _temperature(0x188A64, s4p_coeffs, primary=True)
     assert np.isfinite(T)
+    assert 25.0 < T < 45.0  # realistic warm-lab / on-deck value
 
 
-def test_conductivity_returns_float(s4p_coeffs: XmlconCoeffs) -> None:
+def test_conductivity_in_air_near_zero(s4p_coeffs: XmlconCoeffs) -> None:
+    # scan[3:6] = 0x09BADA → f ≈ 2491 Hz → C ≈ 0 mS/cm (air conductivity)
     T = _temperature(0x188A64, s4p_coeffs, primary=True)
     C = _conductivity(0x09BADA, T, 0.0, s4p_coeffs, primary=True)
     assert np.isfinite(C)
+    assert abs(C) < 0.1  # air conductivity is essentially zero
 
 
-def test_pressure_zero_count_is_nan(s4p_coeffs: XmlconCoeffs) -> None:
-    P = _pressure(b"\x00\x00\x00", s4p_coeffs)
+def test_pressure_zero_freq_is_nan(s4p_coeffs: XmlconCoeffs) -> None:
+    P = _pressure(0.0, 3437, s4p_coeffs)
     assert np.isnan(P)
+
+
+def test_pressure_on_deck_near_zero(s4p_coeffs: XmlconCoeffs) -> None:
+    # scan[6:9] = 0x81A945 → f ≈ 33193 Hz; ptcomp = 3437 → P ≈ 0 dbar at surface
+    f_p = 0x81 * 256.0 + 0xA9 + 0x45 / 256.0
+    P = _pressure(f_p, 3437, s4p_coeffs)
+    assert np.isfinite(P)
+    assert P < 10.0  # atmospheric pressure clamped to gauge ≈ 0 dbar
