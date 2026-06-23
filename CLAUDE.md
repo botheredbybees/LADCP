@@ -4,9 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This repository is in a **pre-implementation phase**. No Python source code exists yet — the root contains only `docs/` and `.gitignore`. The next concrete step is scaffolding the Python package described in the proposal.
+**In active development.** The `src/ladcp/` package is partially implemented with 142+ passing tests.
 
-The planned stack (inferred from `.gitignore`): Python with `uv` or `pixi` for environment management, `ruff` for linting/formatting, and `pytest` for tests. Docker containerization is planned for deployment.
+Completed layers: ingestion (PD0 binary, CTD SBE ASCII), coordinate transforms (beam→earth with gimbaled heading and bin-mapping), QA/editing (sidelobe masking, large-velocity rejection), shear solver, and inverse solver (GPS, SADCP, bottom-track, uplooker constraints).
+
+Open gaps: SADCP NetCDF loader, SBE hex decoder, NetCDF output writer (`ladcp2cdf` equivalent), CLI wiring (stubs exist but raise `NotImplementedError`).
+
+Stack: Python 3.11, `uv`, `ruff`, `pytest`, `numpy`/`xarray`/`scipy`/`netCDF4`. Docker image scaffolded.
 
 ## What this project is
 
@@ -63,16 +67,31 @@ The primary software used for GO-SHIP processing. Key files:
 
 ## Test data (`test_data/`)
 
+### 2018 S4P — primary validation dataset (`test_data/2018_S4P/`)
+
+GO-SHIP cruise S4P (NBP1802), Southern Ocean, processed by A.M. Thurnherr (LDEO).
+Full details: **`test_data/2018_S4P/DATA_SUMMARY.md`** — read that file first.
+
+Key contents:
+- `001.nc`, `002.nc`, `003.nc` — LDEO_IX processed outputs, **primary validation targets** for the inverse solver. Each file embeds GPS, CTD, SADCP, BT, and per-instrument DL/UL profiles alongside the final `u`/`v`, so they can drive solver tests without raw PD0 data.
+- `processed_uv/` — processed NC outputs for 55+ casts (the full cruise).
+- `CTD/320620180309_ctd.nc` — CCHDO calibrated CTD profiles (118 stations), useful for sound-speed correction.
+- `CTD/00101.hex` etc. — raw SBE 24 Hz hex time-series with GPS; paired `.XMLCON` calibration files. Need SBE hex decoder (not yet implemented) to produce the `001.1Hz` ASCII files that LDEO_IX ingests.
+- `SADCP/os75nb/contour/os75nb_short.nc` — OS75 SADCP NetCDF, 17 722 time steps × 60 depth cells, covers full cruise. **Longitude stored offset by −360° — normalize with `lon % 360`.**
+- `set_cast_params.m` — LDEO_IX parameter file; documents raw file naming convention and final processing version (v8: DL+UL IMPed, GPS + SADCP + BT constraints).
+
+Raw LADCP PD0 binary files (`001DL.101` etc.) are **not present**; they were in an archive that was not downloaded.
+
+### I7N cruise data (`test_data/cruise_data/`, `test_data/data/`)
+
 One cast from the I7N GO-SHIP cruise (2018 Indian Ocean), processed by A.M. Thurnherr (LDEO):
 
-- `test_data/data/002.nc` — processed horizontal velocity NetCDF (LDEO_IX output). **This is the primary validation target.**
-- `test_data/data/002.mat` / `002.txt` — same data in MATLAB and ASCII formats.
-- `test_data/plots/` — 10 diagnostic PDFs produced by LDEO_IX (figures 01–14 with gaps).
-- `test_data/ancillary/set_cast_params.m` — LDEO_IX processing parameters for this cruise. Shows the raw file naming convention: `{stn}/{stn}DL000.000` (downlooker) and `{stn}/{stn}UL000.000` (uplooker); CTD at `{stn}.1Hz` (30 header lines, 12 fields per line).
-- `test_data/ancillary/ProcessingParams` — LADCP_w (Perl) configuration. CTD at `{stn}.6Hz` for vertical velocity processing.
+- `test_data/data/002.nc` — processed horizontal velocity NetCDF (LDEO_IX output).
 - `test_data/cruise_data/` — compressed archives of the full cruise (raw PD0 files, SADCP `.mat` files, processed outputs).
 
-The raw PD0 binary files and CTD ASCII files for cast 002 are in the cruise archives.
+### P16N cast003 — integration test data (`test_data/cruise_data/` or similar)
+
+The primary dataset for end-to-end pipeline tests (ingestion → transforms → shear/inverse). Raw PD0 files and CTD data are available for this cast and are used by tests in `tests/integration/`.
 
 ## Validation-first principle
 
