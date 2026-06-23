@@ -3,8 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 import textwrap
 import pytest
+import numpy as np
 
-from ladcp.ingestion.sbe_hex import XmlconCoeffs, load_xmlcon, HexHeader, parse_hex_header
+from ladcp.ingestion.sbe_hex import (
+    XmlconCoeffs,
+    load_xmlcon,
+    HexHeader,
+    parse_hex_header,
+    _temperature,
+    _conductivity,
+    _pressure,
+)
 
 
 MINIMAL_XMLCON = textwrap.dedent("""\
@@ -158,3 +167,29 @@ def test_parse_hex_header_start_datetime(hex_header_file: Path) -> None:
     assert h.upload_month == 3
     assert h.upload_day == 17
     assert abs(h.upload_hour_frac - (1 + 23/60 + 11/3600)) < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# Calibration equation tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def s4p_coeffs(xmlcon_file: Path) -> XmlconCoeffs:
+    return load_xmlcon(xmlcon_file)
+
+
+def test_temperature_returns_float(s4p_coeffs: XmlconCoeffs) -> None:
+    # Non-zero count must produce a finite float
+    T = _temperature(0x188A64, s4p_coeffs, primary=True)
+    assert np.isfinite(T)
+
+
+def test_conductivity_returns_float(s4p_coeffs: XmlconCoeffs) -> None:
+    T = _temperature(0x188A64, s4p_coeffs, primary=True)
+    C = _conductivity(0x09BADA, T, 0.0, s4p_coeffs, primary=True)
+    assert np.isfinite(C)
+
+
+def test_pressure_zero_count_is_nan(s4p_coeffs: XmlconCoeffs) -> None:
+    P = _pressure(b"\x00\x00\x00", s4p_coeffs)
+    assert np.isnan(P)
