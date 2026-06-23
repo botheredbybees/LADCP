@@ -4,7 +4,7 @@ from pathlib import Path
 import textwrap
 import pytest
 
-from ladcp.ingestion.sbe_hex import XmlconCoeffs, load_xmlcon
+from ladcp.ingestion.sbe_hex import XmlconCoeffs, load_xmlcon, HexHeader, parse_hex_header
 
 
 MINIMAL_XMLCON = textwrap.dedent("""\
@@ -108,3 +108,53 @@ def test_secondary_sensors_parsed(xmlcon_file: Path) -> None:
     c = load_xmlcon(xmlcon_file)
     assert abs(c.t2_G - 4.35781951e-3) < 1e-12
     assert abs(c.c2_G - (-3.96678467)) < 1e-6
+
+
+MINIMAL_HEX_HEADER = textwrap.dedent("""\
+* Sea-Bird SBE 9 Data File:
+* FileName = test.hex
+* Software Version Seasave V 7.26.1.8
+* Temperature SN = 5844
+* Conductivity SN = 4546
+* Number of Bytes Per Scan = 44
+* Number of Voltage Words = 5
+* Append System Time to Every Scan
+* System UpLoad Time = Mar 17 2018 01:23:11
+* NMEA Latitude = 70 27.16 S
+* NMEA Longitude = 168 28.48 E
+* NMEA UTC (Time) = Mar 17 2018  01:23:09
+* Store Lat/Lon Data = Append to Every Scan
+* SBE 11plus V 5.1g
+*END*
+""")
+
+
+@pytest.fixture
+def hex_header_file(tmp_path: Path) -> Path:
+    p = tmp_path / "test.hex"
+    p.write_text(MINIMAL_HEX_HEADER, encoding="ascii")
+    return p
+
+
+def test_parse_hex_header_bytes_per_scan(hex_header_file: Path) -> None:
+    h = parse_hex_header(hex_header_file)
+    assert h.bytes_per_scan == 44
+
+
+def test_parse_hex_header_voltage_words(hex_header_file: Path) -> None:
+    h = parse_hex_header(hex_header_file)
+    assert h.n_voltage_words == 5
+
+
+def test_parse_hex_header_nmea_pos(hex_header_file: Path) -> None:
+    h = parse_hex_header(hex_header_file)
+    assert h.nmea_pos_added is True
+
+
+def test_parse_hex_header_start_datetime(hex_header_file: Path) -> None:
+    h = parse_hex_header(hex_header_file)
+    # System UpLoad Time = Mar 17 2018 01:23:11
+    assert h.upload_year == 2018
+    assert h.upload_month == 3
+    assert h.upload_day == 17
+    assert abs(h.upload_hour_frac - (1 + 23/60 + 11/3600)) < 1e-4

@@ -9,6 +9,7 @@ AN-46 (pressure).
 """
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,6 +166,73 @@ def load_xmlcon(path: str | Path) -> XmlconCoeffs:
 
     c.n_freq_channels = t_count + c_count  # 4 for dual T/C
     return c
+
+
+# ---------------------------------------------------------------------------
+# Hex header parsing
+# ---------------------------------------------------------------------------
+
+_MONTH_MAP = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+
+
+@dataclass
+class HexHeader:
+    """Metadata extracted from the SBE hex file header (lines starting with '*')."""
+    bytes_per_scan: int = 0
+    n_voltage_words: int = 0
+    scan_time_added: bool = False
+    nmea_pos_added: bool = False
+    upload_year: int = 0
+    upload_month: int = 0
+    upload_day: int = 0
+    upload_hour_frac: float = 0.0   # hours + minutes/60 + seconds/3600
+
+
+def parse_hex_header(path: str | Path) -> HexHeader:
+    """Read the '*'-prefixed header lines from an SBE hex file."""
+    h = HexHeader()
+    with open(str(path), "r", encoding="ascii", errors="replace") as fh:
+        for line in fh:
+            line = line.rstrip()
+            if not line.startswith("*"):
+                break
+            if line.startswith("*END*"):
+                break
+            stripped = line.lstrip("* ").strip()
+
+            m = re.match(r"Number of Bytes Per Scan\s*=\s*(\d+)", stripped, re.I)
+            if m:
+                h.bytes_per_scan = int(m.group(1))
+                continue
+
+            m = re.match(r"Number of Voltage Words\s*=\s*(\d+)", stripped, re.I)
+            if m:
+                h.n_voltage_words = int(m.group(1))
+                continue
+
+            if re.search(r"Append System Time", stripped, re.I):
+                h.scan_time_added = True
+                continue
+
+            if re.search(r"Store Lat/Lon Data|Latitude/Longitude added", stripped, re.I):
+                h.nmea_pos_added = True
+                continue
+
+            # "System UpLoad Time = Mar 17 2018 01:23:11"
+            m = re.match(
+                r"System UpLoad Time\s*=\s*(\w+)\s+(\d+)\s+(\d+)\s+(\d+):(\d+):(\d+)",
+                stripped, re.I,
+            )
+            if m:
+                mon_str, day, year, hh, mm, ss = m.groups()
+                h.upload_month = _MONTH_MAP.get(mon_str[:3].capitalize(), 0)
+                h.upload_day = int(day)
+                h.upload_year = int(year)
+                h.upload_hour_frac = int(hh) + int(mm) / 60.0 + int(ss) / 3600.0
+    return h
 
 
 # Stub — implemented in Task 3
