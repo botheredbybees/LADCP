@@ -4,7 +4,6 @@ from pathlib import Path
 
 import netCDF4
 import numpy as np
-import pytest
 
 from ladcp.output.nc import write_ladcp_nc
 from ladcp.solution.inverse import InverseResult
@@ -47,10 +46,12 @@ def test_write_core_variables(tmp_path: Path) -> None:
     write_ladcp_nc(out, result)
 
     ds = netCDF4.Dataset(str(out))
-    for var in ("z", "u", "v", "uerr", "nvel", "u_do", "v_do", "u_up", "v_up"):
-        assert var in ds.variables, f"Missing variable: {var}"
-        assert ds.variables[var].shape == (10,), f"{var}: expected shape (10,)"
-    ds.close()
+    try:
+        for var in ("z", "u", "v", "uerr", "nvel", "u_do", "v_do", "u_up", "v_up"):
+            assert var in ds.variables, f"Missing variable: {var}"
+            assert ds.variables[var].shape == (10,), f"{var}: expected shape (10,)"
+    finally:
+        ds.close()
 
 
 def test_write_ctd_velocity_variables(tmp_path: Path) -> None:
@@ -59,10 +60,12 @@ def test_write_ctd_velocity_variables(tmp_path: Path) -> None:
     write_ladcp_nc(out, result)
 
     ds = netCDF4.Dataset(str(out))
-    for var in ("uctd", "vctd", "zctd"):
-        assert var in ds.variables, f"Missing variable: {var}"
-        assert ds.variables[var].shape == (8,)
-    ds.close()
+    try:
+        for var in ("uctd", "vctd", "zctd"):
+            assert var in ds.variables, f"Missing variable: {var}"
+            assert ds.variables[var].shape == (8,)
+    finally:
+        ds.close()
 
 
 def test_write_barotropic_as_attributes(tmp_path: Path) -> None:
@@ -74,11 +77,13 @@ def test_write_barotropic_as_attributes(tmp_path: Path) -> None:
     write_ladcp_nc(out, result_with_ubar)
 
     ds = netCDF4.Dataset(str(out))
-    assert hasattr(ds, "ubar"), "ubar should be a global attribute"
-    assert hasattr(ds, "vbar"), "vbar should be a global attribute"
-    assert abs(float(ds.ubar) - 0.123) < 1e-6
-    assert abs(float(ds.vbar) - -0.045) < 1e-6
-    ds.close()
+    try:
+        assert hasattr(ds, "ubar"), "ubar should be a global attribute"
+        assert hasattr(ds, "vbar"), "vbar should be a global attribute"
+        assert abs(float(ds.ubar) - 0.123) < 1e-6
+        assert abs(float(ds.vbar) - -0.045) < 1e-6
+    finally:
+        ds.close()
 
 
 def test_roundtrip_u_v(tmp_path: Path) -> None:
@@ -111,13 +116,15 @@ def test_write_with_gps_track(tmp_path: Path) -> None:
     )
 
     ds = netCDF4.Dataset(str(out))
-    assert "tim" in ds.variables
-    assert "shiplat" in ds.variables
-    assert "shiplon" in ds.variables
-    assert ds.variables["tim"].shape == (n_ens,)
-    assert hasattr(ds, "uship")
-    assert hasattr(ds, "vship")
-    ds.close()
+    try:
+        assert "tim" in ds.variables
+        assert "shiplat" in ds.variables
+        assert "shiplon" in ds.variables
+        assert ds.variables["tim"].shape == (n_ens,)
+        assert hasattr(ds, "uship")
+        assert hasattr(ds, "vship")
+    finally:
+        ds.close()
 
 
 def test_write_with_sadcp(tmp_path: Path) -> None:
@@ -134,8 +141,10 @@ def test_write_with_sadcp(tmp_path: Path) -> None:
     write_ladcp_nc(out, result, sadcp=sadcp)
 
     ds = netCDF4.Dataset(str(out))
-    assert "u_sadcp" in ds.variables
-    assert "v_sadcp" in ds.variables
-    assert "z_sadcp" in ds.variables
-    assert ds.variables["z_sadcp"].shape == (3,)
-    ds.close()
+    try:
+        assert "u_sadcp" in ds.variables
+        assert "v_sadcp" in ds.variables
+        assert "z_sadcp" in ds.variables
+        assert ds.variables["z_sadcp"].shape == (3,)
+    finally:
+        ds.close()
