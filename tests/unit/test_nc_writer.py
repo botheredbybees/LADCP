@@ -4,6 +4,7 @@ from pathlib import Path
 
 import netCDF4
 import numpy as np
+import pytest
 
 from ladcp.output.nc import write_ladcp_nc
 from ladcp.solution.inverse import InverseResult
@@ -28,7 +29,7 @@ def _make_result(n_z: int = 10, n_se: int = 20) -> InverseResult:
         v_ctd=np.zeros(n_se),
         ubar=0.05,
         vbar=-0.03,
-        zctd=np.linspace(0.0, 500.0, n_se),
+        zctd=np.linspace(-500.0, -5.0, n_se),
         wctd=np.zeros(n_se),
     )
 
@@ -92,14 +93,18 @@ def test_roundtrip_u_v(tmp_path: Path) -> None:
     write_ladcp_nc(out, result)
 
     ds = netCDF4.Dataset(str(out))
-    u_read = np.asarray(ds.variables["u"][:])
-    v_read = np.asarray(ds.variables["v"][:])
-    z_read = np.asarray(ds.variables["z"][:])
-    ds.close()
+    try:
+        u_read = np.asarray(ds.variables["u"][:])
+        v_read = np.asarray(ds.variables["v"][:])
+        z_read = np.asarray(ds.variables["z"][:])
+        zctd_read = np.asarray(ds.variables["zctd"][:])
+    finally:
+        ds.close()
 
     np.testing.assert_allclose(z_read, result.z, rtol=1e-5)
     np.testing.assert_allclose(u_read, result.u, rtol=1e-5)
     np.testing.assert_allclose(v_read, result.v, rtol=1e-5)
+    np.testing.assert_allclose(zctd_read, result.zctd, rtol=1e-5)
 
 
 def test_write_with_gps_track(tmp_path: Path) -> None:
@@ -148,3 +153,13 @@ def test_write_with_sadcp(tmp_path: Path) -> None:
         assert ds.variables["z_sadcp"].shape == (3,)
     finally:
         ds.close()
+
+
+def test_partial_gps_raises(tmp_path: Path) -> None:
+    result = _make_result(n_z=5)
+    with pytest.raises(ValueError, match="must all be provided together"):
+        write_ladcp_nc(
+            tmp_path / "test.nc", result,
+            ens_time_jd=np.linspace(2458919.0, 2458919.5, 10),
+            # ens_lat and ens_lon deliberately omitted
+        )

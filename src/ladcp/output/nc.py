@@ -49,6 +49,13 @@ def write_ladcp_nc(
         as global attributes.
     """
     path = Path(path)
+
+    _gps = (ens_time_jd, ens_lat, ens_lon)
+    if any(x is not None for x in _gps) and not all(x is not None for x in _gps):
+        raise ValueError(
+            "ens_time_jd, ens_lat, and ens_lon must all be provided together or all omitted"
+        )
+
     ds = netCDF4.Dataset(str(path), "w", format="NETCDF4")
     try:
         n_z = len(result.z)
@@ -98,6 +105,7 @@ def write_ladcp_nc(
 
             tim_v = ds.createVariable("tim", "f8", ("nens",))
             tim_v.long_name = "ensemble time, Julian days"
+            tim_v.units = "Julian days"
             tim_v[:] = ens_time_jd
 
             lat_v = ds.createVariable("shiplat", "f4", ("nens",), fill_value=np.nan)
