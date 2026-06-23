@@ -39,21 +39,11 @@ def ref_001_vars(s4p_dir: Path) -> set[str]:
     if not p.exists():
         pytest.skip(f"Reference 001.nc not found: {p}")
     ds = netCDF4.Dataset(str(p))
-    names = set(ds.variables.keys())
-    ds.close()
+    try:
+        names = set(ds.variables.keys())
+    finally:
+        ds.close()
     return names
-
-
-@pytest.fixture(scope="module")
-def ref_001_attrs(s4p_dir: Path) -> set[str]:
-    """Global attribute names present in the S4P reference 001.nc."""
-    p = s4p_dir / "001.nc"
-    if not p.exists():
-        pytest.skip(f"Reference 001.nc not found: {p}")
-    ds = netCDF4.Dataset(str(p))
-    attrs = set(ds.ncattrs())
-    ds.close()
-    return attrs
 
 
 def _make_synthetic_result(n_z: int = 100, n_se: int = 50) -> InverseResult:
@@ -84,19 +74,21 @@ MANDATORY_ATTRS = {"ubar", "vbar"}
 def test_mandatory_vars_present_in_reference(ref_001_vars: set[str]) -> None:
     """Confirm the reference NC actually has the variables we claim are mandatory."""
     missing = MANDATORY_VARS - ref_001_vars
-    assert not missing, f"Reference 001.nc missing expected vars: {missing}"
+    assert not missing, f"Reference 001.nc missing expected vars: {missing}"  # ref_001_vars loaded from fixture
 
 
 @pytest.mark.integration
-def test_writer_produces_mandatory_vars(tmp_path: Path, ref_001_vars: set[str]) -> None:
+def test_writer_produces_mandatory_vars(tmp_path: Path) -> None:
     result = _make_synthetic_result()
     out = tmp_path / "out.nc"
     write_ladcp_nc(out, result)
 
     ds = netCDF4.Dataset(str(out))
-    written = set(ds.variables.keys())
-    attrs = set(ds.ncattrs())
-    ds.close()
+    try:
+        written = set(ds.variables.keys())
+        attrs = set(ds.ncattrs())
+    finally:
+        ds.close()
 
     missing_vars = MANDATORY_VARS - written
     missing_attrs = MANDATORY_ATTRS - attrs
@@ -117,9 +109,11 @@ def test_writer_produces_gps_vars(tmp_path: Path) -> None:
         uship=0.1, vship=-0.05,
     )
     ds = netCDF4.Dataset(str(out))
-    written = set(ds.variables.keys())
-    attrs = set(ds.ncattrs())
-    ds.close()
+    try:
+        written = set(ds.variables.keys())
+        attrs = set(ds.ncattrs())
+    finally:
+        ds.close()
 
     missing = MANDATORY_WITH_GPS - written
     assert not missing, f"Writer did not produce GPS vars: {missing}"
@@ -139,8 +133,10 @@ def test_writer_produces_sadcp_vars(tmp_path: Path) -> None:
     write_ladcp_nc(out, result, sadcp=sadcp)
 
     ds = netCDF4.Dataset(str(out))
-    written = set(ds.variables.keys())
-    ds.close()
+    try:
+        written = set(ds.variables.keys())
+    finally:
+        ds.close()
 
     missing = MANDATORY_WITH_SADCP - written
     assert not missing, f"Writer did not produce SADCP vars: {missing}"
@@ -154,15 +150,19 @@ def test_z_dimension_matches_reference_shape(s4p_dir: Path, tmp_path: Path) -> N
         pytest.skip("001.nc not found")
 
     ds = netCDF4.Dataset(str(ref_path))
-    ref_n_z = len(ds.variables["z"][:])
-    ds.close()
+    try:
+        ref_n_z = len(ds.variables["z"][:])
+    finally:
+        ds.close()
 
     result = _make_synthetic_result(n_z=ref_n_z)
     out = tmp_path / "out_sized.nc"
     write_ladcp_nc(out, result)
 
     ds = netCDF4.Dataset(str(out))
-    written_n_z = len(ds.variables["z"][:])
-    ds.close()
+    try:
+        written_n_z = len(ds.variables["z"][:])
+    finally:
+        ds.close()
 
     assert written_n_z == ref_n_z
