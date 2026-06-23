@@ -131,20 +131,61 @@ def prepare_superensembles(
     slon_se = np.full(n_se, np.nan)
 
     for im, i1 in enumerate(windows):
-        wt_win = ens.weight[:, i1]  # (n_bins, n_win) — NaN where sidelobe-masked
-        # Mask velocities where weight is NaN (edit_sidelobes sets weight=NaN for bad
-        # bins but does not zero the velocity arrays; apply here to exclude them).
+        # MATLAB prepinv.m computes w = d.weight*0+1, which in MATLAB evaluates to 
+        # 1 for finite weights and NaN for NaN weights (since NaN * 0 = NaN).
+        # Therefore, we MUST mask the velocities here where weight is NaN!
+        wt_win = ens.weight[:, i1]
         nan_mask = np.isnan(wt_win)
         u_win = np.where(nan_mask, np.nan, ens.u[:, i1])
         v_win = np.where(nan_mask, np.nan, ens.v[:, i1])
         w_win = np.where(nan_mask, np.nan, ens.w[:, i1])
+        izr_valid = izr[izr < n_bins]
+        ur_t = np.nanmedian(u_win[izr_valid], axis=0)  # (n_win,)
+        vr_t = np.nanmedian(v_win[izr_valid], axis=0)
+        wr_t = np.nanmedian(w_win[izr_valid], axis=0)
 
-        # Time-average each bin over the window.
-        # MATLAB prepinv.m uses medianan(X, iav) with iav=round(n_win/2), which
-        # averages all sorted elements — equivalent to nanmean.
-        ru[:, im] = np.nanmean(u_win, axis=1)
-        rv[:, im] = np.nanmean(v_win, axis=1)
-        rw[:, im] = np.nanmean(w_win, axis=1)
+        # MATLAB prepinv.m computes the mean of the valid reference velocities,
+        # then sets any NaN reference velocities to 0 before dereferencing!
+        ruav = np.nanmean(ur_t)
+        rvav = np.nanmean(vr_t)
+        rwav = np.nanmean(wr_t)
+        
+        ur_t[np.isnan(ur_t)] = 0.0
+        vr_t[np.isnan(vr_t)] = 0.0
+        wr_t[np.isnan(wr_t)] = 0.0
+
+        # Remove per-ensemble reference, average, add back mean reference
+        u_deref = u_win - ur_t[np.newaxis, :]
+        v_deref = v_win - vr_t[np.newaxis, :]
+        w_deref = w_win - wr_t[np.newaxis, :]
+
+        def _medianan(x: np.ndarray, n_avg: int) -> np.ndarray:
+            # Replicates MATLAB's medianan(x, n) behavior
+            x = np.moveaxis(x, 1, -1)
+            y = np.full(x.shape[0], np.nan)
+            for i in range(x.shape[0]):
+                valid = x[i][np.isfinite(x[i])]
+                li = len(valid)
+                if li > 0:
+                    if n_avg > 1:
+                        if li > n_avg:
+                            valid.sort()
+                            # MATLAB: i1 = max([1, round(li/2 - n/2)])
+                            i1_matlab = max(1, round(li / 2 - n_avg / 2))
+                            i1 = i1_matlab - 1  # 0-indexed
+                            y[i] = np.sum(valid[i1 : i1 + n_avg]) / n_avg
+                        else:
+                            y[i] = np.mean(valid)
+                    else:
+                        y[i] = valid[0]
+            return y
+
+        n_win = len(i1)
+        iav = round(n_win / 2)
+
+        ru[:, im] = _medianan(u_deref, iav) + ruav
+        rv[:, im] = _medianan(v_deref, iav) + rvav
+        rw[:, im] = _medianan(w_deref, iav) + rwav
 
         # Velocity uncertainty: combined U+V std over window
         # Fix I-4: single-sample window — use ddof=0 to return 0 not NaN (matches stdnan())
@@ -164,8 +205,7 @@ def prepare_superensembles(
         # Fix I-3: detrend w-component by reference vertical velocity before computing std
         # Replicates prepinv.m lines 565-568: bvel(:,3) = bvel(:,3) - wr(1,:)'
         bvel_win = ens.bvel[i1].copy()
-        wr_ref = float(np.nanmean(rw[:, im]))
-        bvel_win[:, 2] = bvel_win[:, 2] - wr_ref
+        bvel_win[:, 2] = bvel_win[:, 2] - wr_t
         bvels_se[:, im] = np.nanstd(bvel_win, axis=0, ddof=1)
         hbot_se[im] = np.nanmean(ens.hbot[i1])
         slat_se[im] = np.nanmedian(ens.slat[i1])

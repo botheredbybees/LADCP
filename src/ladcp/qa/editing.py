@@ -45,3 +45,63 @@ def edit_sidelobes(
     new_weight = ens.weight.copy()
     new_weight[bad_surface | bad_bottom] = np.nan
     return dataclasses.replace(ens, weight=new_weight)
+
+
+def edit_large_velocities(
+    ens: EnsembleData,
+    *,
+    maxspeed: float = 2.5,
+) -> EnsembleData:
+    """Mask bins where horizontal speed exceeds maxspeed.
+
+    Mirrors MATLAB loadrdi.m lines 235–242: sqrt(u²+v²) > p.vlim=2.5 m/s sets
+    that bin's weight to NaN. Applied after Earth-frame rotation, before
+    super-ensemble averaging.
+    """
+    speed_sq = np.where(np.isfinite(ens.u) & np.isfinite(ens.v),
+                        ens.u ** 2 + ens.v ** 2,
+                        0.0)
+    bad = speed_sq > maxspeed ** 2
+    new_weight = ens.weight.copy()
+    new_weight[bad] = np.nan
+    return dataclasses.replace(ens, weight=new_weight)
+
+
+def edit_w_outliers(
+    ens: EnsembleData,
+    *,
+    wlim: float = 0.2,
+    wrange: int = 5,
+) -> EnsembleData:
+    """Mask bins with anomalous vertical velocity relative to near-instrument reference.
+
+    Mirrors MATLAB loadrdi.m lines 185–201. For each ensemble the reference w is
+    the median of the `wrange` bins nearest each transducer (DL and UL separately).
+    Any bin where |w_measured - w_ref| > wlim is masked.
+
+    Physical meaning: since the ADCP measures velocity relative to itself and the
+    instrument descends at ~1 m/s, near-transducer bins give w_ref ≈ +1 m/s.
+    Bins deviating by more than wlim are contaminated (reflections, vibration,
+    beam interference) and should be excluded before shear-based inversion.
+    """
+    w_ref = np.full(ens.w.shape, np.nan)
+
+    # DL reference: first wrange DL bins (nearest to DL transducer = shallowest DL)
+    if len(ens.izd) > 0:
+        dl_ref_idx = ens.izd[:wrange]
+        w_ref_dl = np.nanmedian(ens.w[dl_ref_idx, :], axis=0)  # (n_ens,)
+        w_ref[ens.izd, :] = w_ref_dl[np.newaxis, :]
+
+    # UL reference: first wrange UL bins (nearest to UL transducer = deepest UL)
+    if len(ens.izu) > 0:
+        ul_ref_idx = ens.izu[:wrange]
+        w_ref_ul = np.nanmedian(ens.w[ul_ref_idx, :], axis=0)  # (n_ens,)
+        w_ref[ens.izu, :] = w_ref_ul[np.newaxis, :]
+
+    # Mask bins deviating more than wlim from their reference
+    bad = np.abs(ens.w - w_ref) > wlim
+    bad &= np.isfinite(ens.w)
+
+    new_weight = ens.weight.copy()
+    new_weight[bad] = np.nan
+    return dataclasses.replace(ens, weight=new_weight)

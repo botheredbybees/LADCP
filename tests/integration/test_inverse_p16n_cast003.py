@@ -22,7 +22,7 @@ from ladcp.ingestion.ctd import assign_bin_depths, load_ctd
 from ladcp.ingestion.rdi import load_rdi
 from ladcp.solution.inverse import EnsembleData, InverseResult, compute_inverse, prepare_superensembles
 from ladcp.transforms.beam2earth import beam2earth, uvrot
-from ladcp.qa.editing import edit_sidelobes
+from ladcp.qa.editing import edit_large_velocities, edit_sidelobes, edit_w_outliers
 
 THETA_DEG = 20.0  # RDI Workhorse 300 kHz beam angle
 DROT_DEG = 12.318441  # magnetic declination East (NOAA WMM, P16N 2015 station)
@@ -187,6 +187,8 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     )
 
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
+    ens = edit_large_velocities(ens)
+    ens = edit_w_outliers(ens)
     se = prepare_superensembles(ens, dz=16.0)
     return compute_inverse(
         se,

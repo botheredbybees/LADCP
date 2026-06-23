@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from ladcp.ingestion.ctd import assign_bin_depths, compute_ship_velocity, load_ctd
 from ladcp.ingestion.rdi import load_rdi
-from ladcp.qa.editing import edit_sidelobes
+from ladcp.qa.editing import edit_large_velocities, edit_sidelobes, edit_w_outliers
 from ladcp.solution.inverse import EnsembleData, compute_inverse, prepare_superensembles
 from ladcp.transforms.beam2earth import beam2earth, uvrot
 
@@ -63,7 +63,7 @@ def load_dl(dl_path: Path, cnv_path: Path, sadcp_path: Path):
     else:
         slat = np.full(rdi.nens, np.nan)
         slon = np.full(rdi.nens, np.nan)
-        u_ship, v_ship = 0.0, 0.0
+        u_ship, v_ship = None, None  # will be filled from 003.nc by caller
 
     sadcp_z = sadcp_u = sadcp_v = sadcp_err = None
     if sadcp_path.exists():
@@ -81,8 +81,8 @@ def load_dl(dl_path: Path, cnv_path: Path, sadcp_path: Path):
     )
 
 
-def score_vs_ref(result, ref_path: Path) -> dict:
-    """Compare u, v against 003.nc by depth band. Returns RMSE and corr per band."""
+def score_vs_ref(result, ref_path: Path, fine_bands: bool = False) -> dict:
+    """Compare u, v against 003.nc by depth band. Returns RMSE, bias, and corr per band."""
     ds = netCDF4.Dataset(ref_path)
     ref_z = np.array(ds.variables["z"][:])
     ref_u = np.array(ds.variables["u"][:])
@@ -93,27 +93,41 @@ def score_vs_ref(result, ref_path: Path) -> dict:
     res_u = np.interp(ref_z, result.z, result.u, left=np.nan, right=np.nan)
     res_v = np.interp(ref_z, result.z, result.v, left=np.nan, right=np.nan)
 
-    bands = [(0, 800), (800, 4500), (0, 4500)]
+    if fine_bands:
+        bands = [(0, 500), (500, 1000), (1000, 1500), (1500, 2000),
+                 (2000, 2500), (2500, 3000), (3000, 3500), (3500, 4500), (0, 4500)]
+    else:
+        bands = [(0, 800), (800, 4500), (0, 4500)]
+
     scores = {}
     for lo, hi in bands:
         mask = (ref_z >= lo) & (ref_z <= hi) & np.isfinite(ref_u) & np.isfinite(res_u) & (ref_nvel >= 3)
         if mask.sum() < 5:
-            scores[f"{lo}-{hi}"] = dict(n=0, u_rmse=np.nan, v_rmse=np.nan, u_corr=np.nan, v_corr=np.nan)
+            scores[f"{lo}-{hi}"] = dict(n=0, u_rmse=np.nan, v_rmse=np.nan,
+                                        u_bias=np.nan, v_bias=np.nan,
+                                        u_corr=np.nan, v_corr=np.nan)
             continue
-        du = result.u[np.searchsorted(result.z, ref_z[mask])] if False else res_u[mask]
-        dv = res_v[mask]
+        du, dv = res_u[mask], res_v[mask]
         ru, rv = ref_u[mask], ref_v[mask]
         u_rmse = float(np.sqrt(np.mean((du - ru) ** 2)))
         v_rmse = float(np.sqrt(np.mean((dv - rv) ** 2)))
+        u_bias = float(np.mean(du - ru))
+        v_bias = float(np.mean(dv - rv))
         u_corr = float(np.corrcoef(du, ru)[0, 1]) if len(du) > 1 else np.nan
         v_corr = float(np.corrcoef(dv, rv)[0, 1]) if len(dv) > 1 else np.nan
         scores[f"{lo}-{hi}"] = dict(n=int(mask.sum()), u_rmse=u_rmse, v_rmse=v_rmse,
+                                    u_bias=u_bias, v_bias=v_bias,
                                     u_corr=u_corr, v_corr=v_corr)
     return scores
 
 
-def run_variant(dl: dict, ul_data: dict | None, label: str):
-    """Build EnsembleData from DL + optional UL, run inverse, return result."""
+def run_variant(dl: dict, ul_data: dict | None, label: str,
+                u_ship_override=None, v_ship_override=None, gps_on: bool = True):
+    """Build EnsembleData from DL + optional UL, run inverse, return result.
+
+    If gps_on=False, passes u_ship=v_ship=None to compute_inverse (no barotropic constraint).
+    Otherwise uses u_ship_override / dl["u_ship"] in that order.
+    """
     rdi = dl["rdi"]
     n_dl = rdi.nbin
 
@@ -166,10 +180,20 @@ def run_variant(dl: dict, ul_data: dict | None, label: str):
         )
 
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
+    ens = edit_large_velocities(ens)
+    ens = edit_w_outliers(ens)
     se = prepare_superensembles(ens, dz=16.0)
+
+    if not gps_on:
+        u_gps, v_gps = None, None
+    elif u_ship_override is not None:
+        u_gps, v_gps = u_ship_override, v_ship_override
+    else:
+        u_gps, v_gps = dl["u_ship"], dl["v_ship"]
+
     result = compute_inverse(
         se,
-        u_ship=dl["u_ship"], v_ship=dl["v_ship"],
+        u_ship=u_gps, v_ship=v_gps,
         sadcp_z=dl["sadcp_z"], sadcp_u=dl["sadcp_u"],
         sadcp_v=dl["sadcp_v"], sadcp_err=dl["sadcp_err"],
     )
@@ -231,6 +255,20 @@ def main():
     rdi_ul = load_rdi(ul_path)
     ctd = dl["ctd"]
 
+    # If binary CNV (no lat/lon), read scalar GPS from 003.nc reference attributes.
+    # This matches what the integration test does.
+    if dl["u_ship"] is None:
+        _ds = netCDF4.Dataset(ref_path)
+        try:
+            dl["u_ship"] = float(_ds.uship)
+            dl["v_ship"] = float(_ds.vship)
+            print(f"GPS from 003.nc attrs: u_ship={dl['u_ship']:.4f}, v_ship={dl['v_ship']:.4f} m/s")
+        except Exception as e:
+            print(f"WARNING: could not read GPS from 003.nc: {e}")
+            dl["u_ship"] = dl["v_ship"] = None
+        _ds.close()
+
+    # -- Section 1: orientation sweep (coarse bands) ------------------------------
     variants = [
         ("DL only (baseline)", None),
         ("DL + UL, no_flip", "no_flip"),
@@ -240,17 +278,17 @@ def main():
         ("DL + UL, heading_180", "heading_180"),
     ]
 
-    print(f"\n{'Variant':<35} {'Band':>12} {'n':>5} {'u_rmse':>8} {'v_rmse':>8} {'u_corr':>8} {'v_corr':>8}")
-    print("-" * 95)
+    print(f"\n{'-'*110}")
+    print("SECTION 1: Orientation sweep (coarse bands)")
+    print(f"{'-'*110}")
+    print(f"{'Variant':<35} {'Band':>12} {'n':>5} {'u_rmse':>8} {'v_rmse':>8} "
+          f"{'u_bias':>8} {'v_bias':>8} {'u_corr':>8} {'v_corr':>8}")
+    print(f"{'-'*110}")
 
     for label, vname in variants:
-        if vname is None:
-            ul_data = None
-        else:
-            ul_data = make_ul_variant(rdi_ul, ctd, vname)
-
+        ul_data = None if vname is None else make_ul_variant(rdi_ul, ctd, vname)
         result = run_variant(dl, ul_data, label)
-        scores = score_vs_ref(result, ref_path)
+        scores = score_vs_ref(result, ref_path, fine_bands=False)
 
         first = True
         for band, s in scores.items():
@@ -258,6 +296,35 @@ def main():
             first = False
             print(f"{row_label:<35} {band:>12} {s['n']:>5} "
                   f"{s['u_rmse']:>8.4f} {s['v_rmse']:>8.4f} "
+                  f"{s['u_bias']:>8.4f} {s['v_bias']:>8.4f} "
+                  f"{s['u_corr']:>8.4f} {s['v_corr']:>8.4f}")
+        print()
+
+    # -- Section 2: GPS-on vs GPS-off (fine 500m bands, pitch_flip only) ----------
+    print(f"\n{'-'*110}")
+    print("SECTION 2: GPS-on vs GPS-off — per-500m-band bias  (DL + UL pitch_flip)")
+    print(f"{'-'*110}")
+    print(f"{'Variant':<30} {'Band':>12} {'n':>5} {'u_rmse':>8} {'v_rmse':>8} "
+          f"{'u_bias':>8} {'v_bias':>8} {'u_corr':>8} {'v_corr':>8}")
+    print(f"{'-'*110}")
+
+    ul_pf = make_ul_variant(rdi_ul, ctd, "pitch_flip")
+    fine_variants = [
+        ("DL only (fine bands)", None, True),
+        ("DL+UL pitch_flip + GPS", ul_pf, True),
+        ("DL+UL pitch_flip no GPS", ul_pf, False),
+    ]
+    for label, ul_data, gps_on in fine_variants:
+        result = run_variant(dl, ul_data, label, gps_on=gps_on)
+        scores = score_vs_ref(result, ref_path, fine_bands=True)
+
+        first = True
+        for band, s in scores.items():
+            row_label = label if first else ""
+            first = False
+            print(f"{row_label:<30} {band:>12} {s['n']:>5} "
+                  f"{s['u_rmse']:>8.4f} {s['v_rmse']:>8.4f} "
+                  f"{s['u_bias']:>8.4f} {s['v_bias']:>8.4f} "
                   f"{s['u_corr']:>8.4f} {s['v_corr']:>8.4f}")
         print()
 
