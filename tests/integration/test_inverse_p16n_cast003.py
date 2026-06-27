@@ -189,7 +189,7 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
     ens = edit_large_velocities(ens)
     ens = edit_w_outliers(ens)
-    se = prepare_superensembles(ens, dz=16.0)
+    se = prepare_superensembles(ens)  # dz=None: auto-computes median bin spacing (8m for P16N)
     return compute_inverse(
         se,
         u_ship=u_ship, v_ship=v_ship,

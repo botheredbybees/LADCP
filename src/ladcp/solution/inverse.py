@@ -59,25 +59,52 @@ class SuperEnsemble:
     izu: np.ndarray       # uplooker bin row indices (unchanged from input)
 
 
-def _window_boundaries(depth0: np.ndarray, avdz: float) -> list[np.ndarray]:
+def _window_boundaries(depth0: np.ndarray, avdz: float, oversample: float = 1.0) -> list[np.ndarray]:
     """Partition ensemble indices into depth-triggered windows.
 
-    Replicates the while-loop in prepinv.m lines 499–605. Each window spans
-    consecutive ensembles until |depth0[t] - depth0[window_start]| > avdz.
+    Replicates the while-loop in prepinv.m lines 499–605.
+
+    MATLAB oversample expansion (default 1.0):
+      - Initial range i1 spans from ilast+1 to the first ensemble where
+        |depth[t] - depth[ilast]| > avdz.
+      - Then i1 is expanded symmetrically around its mean to width
+        length(i1) * oversample, making adjacent windows overlap.
+      - ilast advances to max(i1) of the expanded window.
+    Windows may therefore contain overlapping ensembles (smoothing effect).
     """
     n = len(depth0)
     windows: list[np.ndarray] = []
+    # MATLAB uses 1-based indexing; ilast=1 means the comparison starts from
+    # index 2 in the first iteration, effectively skipping ensemble 0 from
+    # inclusion as the comparison anchor only. We use 0-based with the same
+    # semantic: ilast is the anchor, i1 starts at ilast+1.
     ilast = 0
-    while ilast < n:
-        if ilast + 1 >= n:
-            windows.append(np.array([ilast]))
-            break
+    while ilast < n - 1:
         depth_change = np.abs(depth0[ilast + 1:] - depth0[ilast])
         ii = np.where(depth_change > avdz)[0]
-        end = int(ii[0]) + 1 if len(ii) > 0 else n - ilast
-        i1 = np.arange(ilast, min(ilast + end, n))
+        if len(ii) == 0:
+            end = n - ilast - 1
+        else:
+            end = int(ii[0]) + 1
+        # Initial range: ilast+1 .. ilast+end (1-indexed: ilast+[1:end])
+        i1_init = np.arange(ilast + 1, min(ilast + 1 + end, n))
+        if len(i1_init) == 0:
+            break
+        # Oversample expansion: expand symmetrically around mean of i1_init
+        i1l = len(i1_init) / 2.0 * oversample
+        center = float(np.mean(i1_init))
+        lo = int(round(center - i1l))
+        hi = int(round(center + i1l))
+        i1 = np.arange(max(0, lo), min(n, hi + 1))
+        if len(i1) == 0:
+            i1 = i1_init
+        # Ensure minimum window size of 2
+        if len(i1) < 2:
+            i1 = np.array([i1[0], min(i1[0] + 1, n - 1)])
         windows.append(i1)
-        ilast = int(i1[-1]) + 1
+        ilast = int(i1[-1])
+        if ilast >= n - 1:
+            break
     return windows
 
 

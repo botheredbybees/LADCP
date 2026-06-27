@@ -101,11 +101,30 @@ The solved system is `[A_ocean | A_ctd] * [u_ocean; u_ctd_neg] = d`. The solutio
 The integration test in `tests/integration/test_inverse_p16n_cast003.py` runs the full pipeline and compares against the LDEO MATLAB reference output `test_data/2015_P16N/003.nc`.
 
 Current status:
-- **u RMSE = 0.0718 m/s** (target: < 0.05 m/s; tests are `xfail`)
+- **u RMSE = 0.0723 m/s** (target: < 0.05 m/s; tests are `xfail`)
 - Correlation r ≈ +0.90 at 0–1000 m; **r ≈ −0.40 at 1000–2000 m** (anti-correlated)
-- n_se = 524 (our Python) vs 827 (MATLAB) — discrepancy not yet resolved
+- n_se = 947 (Python, after fix) vs 827 (MATLAB) — gap reduced but not closed
 
-The anti-correlation at 1000–2000 m is not caused by the GPS barotropic constraint (removing it does not change the correlation). The root cause is not yet identified but requires MATLAB intermediate arrays (`di.ru`, `di.izm`, `dr.uctd`) to compare directly. See `docs/superpowers/plans/2026-06-22-rmse-closure.md`.
+### n_se Discrepancy Root Cause (2026-06-27)
+
+**Bug**: test used hardcoded `dz=16.0`; MATLAB default `avdz = medianan(abs(diff(d.izm(:,1))))` = 8.0 m (bin spacing). This halved the super-ensemble count from ~947 to 524.
+
+**Fix**: changed test to `dz=None` (auto-computed from `median(|diff(izm[:, 0])|)` = 8.0 m).
+
+**MATLAB oversample not yet fully replicated**: MATLAB's `prepinv.m` expands each window symmetrically around its center with `i1l = length(i1)/2 * oversample` (default oversample=1). This creates overlapping windows and increases effective step to N+1 per window. `_window_boundaries` now implements `oversample=1.0` by default but produces n_se=947 vs MATLAB's 827. Remaining ~14% gap is from exact MATLAB rounding differences and the depth variable (MATLAB uses `d.izm(1,:)` = shallowest bin depth; Python uses `ens.z` = CTD depth; both change at ~1.09 m/ens so not a major factor).
+
+**RMSE not improved by n_se fix**: RMSE was 0.0718 before, 0.0723 after (trivial change within solver conditioning noise). The anti-correlation at 1000–2000 m has a different root cause not related to super-ensemble count.
+
+### Remaining Hypotheses for RMSE Gap
+
+The anti-correlation at 1000–2000 m is not caused by:
+- GPS barotropic constraint (removing it doesn't change the correlation)
+- n_se count (increasing from 524 to 947 didn't help)
+
+Requires investigation of MATLAB intermediate arrays (`di.ru`, `di.izm`, `dr.uctd`) to compare directly. Candidate causes:
+1. The observation matrix `A_ocean` depth bin mapping uses `dz` (now 8m vs previously 16m) — finer bins means ~550 depth bins, possibly over-parameterized without smoothing (`smoofac=0`).
+2. `ruvs=0 → wm=inf` at deep bins was patched (Fix I-4, ddof=0) but not verified to be the sole cause at 1000–2000 m.
+3. `_medianan` in Python vs MATLAB's `medianan()` — subtle difference in averaging within a window.
 
 ---
 
