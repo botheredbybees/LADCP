@@ -1,0 +1,161 @@
+"""Depth-stratified RMSE vs LDEO reference, before/after the beams_up fix.
+
+Runs the exact pipeline of tests/integration/test_inverse_p16n_cast003.py in
+two conventions:
+  new    - loadrdi convention (gimbaled=False, beams_up per instrument, raw
+           UL attitude): the fixed production path.
+  legacy - the pre-fix path, reproduced exactly: up-looking beam matrix for
+           BOTH instruments (beams_up=True), gimbaled=True, UL pitch negated.
+
+Usage:  TEST_DATA_DIR=test_data uv run python scripts/diag_rmse_strata.py
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import netCDF4
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from ladcp.ingestion.ctd import assign_bin_depths, load_ctd  # noqa: E402
+from ladcp.ingestion.rdi import load_rdi  # noqa: E402
+from ladcp.qa.editing import (  # noqa: E402
+    edit_large_velocities,
+    edit_sidelobes,
+    edit_w_outliers,
+)
+from ladcp.solution.inverse import (  # noqa: E402
+    EnsembleData,
+    compute_inverse,
+    prepare_superensembles,
+)
+from ladcp.transforms.beam2earth import beam2earth, uvrot  # noqa: E402
+
+THETA_DEG = 20.0
+DROT_DEG = 12.318441
+STRATA = [(0, 1000), (1000, 2000), (2000, 3000), (3000, 4500)]
+
+
+def run_pipeline(data_dir: Path, legacy: bool):
+    rdi = load_rdi(data_dir / "003DL000.000")
+    rdi_ul = load_rdi(data_dir / "003UL000.000")
+    ctd = load_ctd(data_dir / "003_01.cnv")
+
+    if legacy:
+        dl_kw = dict(gimbaled=True, beams_up=True)  # old up-matrix for DL too
+        ul_kw = dict(gimbaled=True, beams_up=True)
+        ul_pitch = -rdi_ul.pitch
+    else:
+        dl_kw = dict(gimbaled=False, beams_up=False)
+        ul_kw = dict(gimbaled=False, beams_up=True)
+        ul_pitch = rdi_ul.pitch
+
+    u_dl, v_dl, w_dl = beam2earth(
+        rdi.u, rdi.v, rdi.w, rdi.e,
+        rdi.heading, rdi.pitch, rdi.roll, THETA_DEG, **dl_kw,
+    )
+    u_dl, v_dl = uvrot(u_dl, v_dl, -DROT_DEG)
+    z_m, izm_dl_pos = assign_bin_depths(rdi, ctd, looker="down")
+    weight_dl = np.nanmean(rdi.corr.astype(np.float64), axis=2) / 128.0
+
+    u_ul, v_ul, w_ul = beam2earth(
+        rdi_ul.u, rdi_ul.v, rdi_ul.w, rdi_ul.e,
+        rdi_ul.heading, ul_pitch, rdi_ul.roll, THETA_DEG, **ul_kw,
+    )
+    u_ul, v_ul = uvrot(u_ul, v_ul, -DROT_DEG)
+    _, izm_ul_pos = assign_bin_depths(rdi_ul, ctd, looker="up")
+    weight_ul = np.nanmean(rdi_ul.corr.astype(np.float64), axis=2) / 128.0
+
+    ul_idx = np.argmin(
+        np.abs(rdi_ul.time_julian[:, None] - rdi.time_julian[None, :]), axis=0
+    )
+    n_ul, n_dl = rdi_ul.nbin, rdi.nbin
+    u_comb = np.vstack([u_ul[:, ul_idx][::-1, :], u_dl])
+    v_comb = np.vstack([v_ul[:, ul_idx][::-1, :], v_dl])
+    w_comb = np.vstack([w_ul[:, ul_idx][::-1, :], w_dl])
+    weight_comb = np.vstack([weight_ul[:, ul_idx][::-1, :], weight_dl])
+    izm_comb = np.vstack([-izm_ul_pos[:, ul_idx][::-1, :], -izm_dl_pos])
+    izu = np.arange(n_ul - 1, -1, -1, dtype=int)
+    izd = np.arange(n_ul, n_ul + n_dl, dtype=int)
+
+    bt_u, bt_v, bt_w = beam2earth(
+        rdi.btrack_vel_ms[0], rdi.btrack_vel_ms[1],
+        rdi.btrack_vel_ms[2], rdi.btrack_vel_ms[3],
+        rdi.heading, rdi.pitch, rdi.roll, THETA_DEG, **dl_kw,
+    )
+    bt_u, bt_v = uvrot(bt_u, bt_v, -DROT_DEG)
+    bvel = np.stack([bt_u, bt_v, bt_w], axis=1)
+
+    ds = netCDF4.Dataset(data_dir / "003.nc")
+    u_ship, v_ship = float(ds.uship), float(ds.vship)
+    ref_z = np.array(ds.variables["z"][:])
+    ref_u = np.array(ds.variables["u"][:])
+    ref_v = np.array(ds.variables["v"][:])
+    ref_nvel = np.array(ds.variables["nvel"][:])
+    ds.close()
+
+    sadcp = data_dir / "sadcp_003.npz"
+    npz = np.load(sadcp) if sadcp.exists() else None
+
+    ens = EnsembleData(
+        u=u_comb, v=v_comb, w=w_comb, weight=weight_comb,
+        izm=izm_comb, z=-z_m, time_jul=rdi.time_julian,
+        bvel=bvel, bvels=np.full_like(bvel, 0.02),
+        hbot=np.nanmean(rdi.btrack_range_m, axis=0),
+        izd=izd, izu=izu,
+        slat=np.full(rdi.nens, np.nan), slon=np.full(rdi.nens, np.nan),
+    )
+    ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
+    ens = edit_large_velocities(ens)
+    ens = edit_w_outliers(ens)
+    se = prepare_superensembles(ens)
+    res = compute_inverse(
+        se, u_ship=u_ship, v_ship=v_ship,
+        sadcp_z=npz["z"] if npz is not None else None,
+        sadcp_u=npz["u"] if npz is not None else None,
+        sadcp_v=npz["v"] if npz is not None else None,
+        sadcp_err=npz["err"] if npz is not None else None,
+    )
+    return res, (ref_z, ref_u, ref_v, ref_nvel)
+
+
+def stats(res, ref):
+    ref_z, ref_u, ref_v, ref_nvel = ref
+    ru = np.interp(ref_z, res.z, res.u, left=np.nan, right=np.nan)
+    rv = np.interp(ref_z, res.z, res.v, left=np.nan, right=np.nan)
+    valid = np.isfinite(ref_u) & np.isfinite(ru) & (ref_nvel >= 3)
+    out = []
+    tot_u = float(np.sqrt(np.mean((ru[valid] - ref_u[valid]) ** 2)))
+    tot_v = float(np.sqrt(np.mean((rv[valid] - ref_v[valid]) ** 2)))
+    out.append(("TOTAL", valid.sum(), tot_u, tot_v,
+                float(np.corrcoef(ru[valid], ref_u[valid])[0, 1])))
+    for z0, z1 in STRATA:
+        s = valid & (ref_z >= z0) & (ref_z < z1)
+        if s.sum() > 5:
+            out.append((
+                f"{z0}-{z1}m", s.sum(),
+                float(np.sqrt(np.mean((ru[s] - ref_u[s]) ** 2))),
+                float(np.sqrt(np.mean((rv[s] - ref_v[s]) ** 2))),
+                float(np.corrcoef(ru[s], ref_u[s])[0, 1]),
+            ))
+    return out
+
+
+def main():
+    data_dir = Path(os.environ.get("TEST_DATA_DIR", "test_data")) / "2015_P16N"
+    for legacy in (True, False):
+        tag = "LEGACY (pre-fix)" if legacy else "NEW (loadrdi convention)"
+        res, ref = run_pipeline(data_dir, legacy)
+        print(f"\n=== {tag} ===")
+        hdr = f"  {'stratum':>12s} {'n':>4s} {'u RMSE':>8s} {'v RMSE':>8s} {'r(u)':>6s}"
+        print(hdr)
+        for name, n, eu, ev, r in stats(res, ref):
+            print(f"  {name:>12s} {n:4d} {eu:8.4f} {ev:8.4f} {r:+6.3f}")
+
+
+if __name__ == "__main__":
+    main()
