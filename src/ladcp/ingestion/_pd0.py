@@ -125,24 +125,33 @@ def _read_fixed_leader(body: bytes, start: int) -> dict:
     """Reference: rdflead() in loadrdi.m.
 
     Byte layout (offsets relative to start, i.e. after the 2-byte ID):
-      skip 7 bytes (CPU firmware/feature flags)
+      skip 2 bytes (CPU firmware version/revision)
+      sysconfig   uint16  @ +2   (LSB bit 7: 0=down-facing, 1=up-facing;
+                                  MSB bits 0-1: beam angle 15/20/30 deg)
+      skip 3 bytes (real/sim flag, lag length, number of beams)
       nbin        uint8   @ +7
       npng        uint16  @ +8
       blen_cm     uint16  @ +10
       blnk_cm     uint16  @ +12
       skip 16 bytes       @ +14
-      coord_transform uint8 @ +23
+      coord_transform uint8 @ +23  (EX byte)
+      hdg_align   int16   @ +24  (EA word, 0.01 deg)
+      hdg_bias    int16   @ +26  (EB word, 0.01 deg)
       dist_cm     uint16  @ +30
       plen_cm     uint16  @ +32
       skip 6 bytes        @ +34
       serial      8×uint8 @ +40
     """
+    sysconfig = struct.unpack_from("<H", body, start + 2)[0]
+    beams_up = bool(body[start + 2] & 0x80)  # LSB bit 7 (rditype.m: d.Up=b(1))
+    beam_angle_deg = (15.0, 20.0, 30.0, 0.0)[body[start + 3] & 0x03]
     p = start + 7
     nbin = body[p]
     npng, blen_cm, blnk_cm = struct.unpack_from("<HHH", body, p + 1)
     # skip 16 bytes (water profiling mode, correlation threshold, etc.)
     p2 = p + 1 + 6 + 16
     coord_transform = body[start + 23]
+    hdg_align, hdg_bias = struct.unpack_from("<hh", body, start + 24)
     dist_cm, plen_cm = struct.unpack_from("<HH", body, p2)
     # skip 6 bytes (ref layer, false target, spare, bandwidth)
     p3 = p2 + 4 + 6
@@ -156,6 +165,11 @@ def _read_fixed_leader(body: bytes, start: int) -> dict:
         "dist_m": dist_cm * _FL_LEN_SCALE,
         "plen_m": plen_cm * _FL_LEN_SCALE,
         "serial": serial,
+        "sysconfig": sysconfig,
+        "beams_up": beams_up,
+        "beam_angle_deg": beam_angle_deg,
+        "hdg_align_deg": hdg_align * 0.01,
+        "hdg_bias_deg": hdg_bias * 0.01,
     }
 
 

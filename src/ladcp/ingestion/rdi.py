@@ -91,4 +91,9 @@ def load_rdi(path: Path) -> RDIData:
         npng=fl["npng"],
         coord_transform=fl["coord_transform"],
         serial=fl["serial"],
+        sysconfig=fl["sysconfig"],
+        beams_up=fl["beams_up"],
+        beam_angle_deg=fl["beam_angle_deg"],
+        hdg_align_deg=fl["hdg_align_deg"],
+        hdg_bias_deg=fl["hdg_bias_deg"],
     )

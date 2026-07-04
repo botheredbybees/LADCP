@@ -44,3 +44,8 @@ class RDIData:
     npng: int
     coord_transform: int  # EX byte: bits 4-3 = frame, 2=tilt, 1=binmap, 0=3beam
     serial: list[int]
+    sysconfig: int = 0  # fixed-leader system-configuration word (raw uint16)
+    beams_up: bool = False  # sysconfig LSB bit 7: True = up-facing (uplooker)
+    beam_angle_deg: float = 20.0  # sysconfig MSB bits 0-1: 15/20/30 deg
+    hdg_align_deg: float = 0.0  # EA heading-alignment word, degrees
+    hdg_bias_deg: float = 0.0  # EB heading-bias word, degrees
