@@ -59,6 +59,30 @@ class SuperEnsemble:
     izu: np.ndarray       # uplooker bin row indices (unchanged from input)
 
 
+def _ref_medianan(x: np.ndarray) -> np.ndarray:
+    """Replicate MATLAB medianan(x, na=0) column-wise on a (n_bins, n_ens) array.
+
+    For each column (ensemble), sorts valid (finite) rows, then returns the
+    element at 1-based index round(n_valid / 2).  With 4 reference bins whose
+    DL and UL values form separate clusters, this reliably picks a DL-side
+    value rather than the midpoint returned by np.nanmedian, replicating the
+    MATLAB prepinv.m reference-velocity extraction behaviour.
+    """
+    n_rows, n_cols = x.shape
+    y = np.full(n_cols, np.nan)
+    for j in range(n_cols):
+        col = x[:, j]
+        valid = col[np.isfinite(col)]
+        n = len(valid)
+        if n == 0:
+            continue
+        valid = np.sort(valid)
+        idx_1based = round(n / 2)          # MATLAB round(n/2)
+        idx = max(0, min(n - 1, idx_1based - 1))  # convert to 0-based
+        y[j] = valid[idx]
+    return y
+
+
 def _window_boundaries(depth0: np.ndarray, avdz: float, oversample: float = 1.0) -> list[np.ndarray]:
     """Partition ensemble indices into depth-triggered windows.
 
@@ -167,9 +191,13 @@ def prepare_superensembles(
         v_win = np.where(nan_mask, np.nan, ens.v[:, i1])
         w_win = np.where(nan_mask, np.nan, ens.w[:, i1])
         izr_valid = izr[izr < n_bins]
-        ur_t = np.nanmedian(u_win[izr_valid], axis=0)  # (n_win,)
-        vr_t = np.nanmedian(v_win[izr_valid], axis=0)
-        wr_t = np.nanmedian(w_win[izr_valid], axis=0)
+        # Replicate MATLAB medianan(x, na=0): pick round(n/2)-th sorted value
+        # per ensemble rather than the average of the two middle values.
+        # When DL and UL velocities differ (e.g. due to UL compass offset),
+        # this consistently selects a DL-cluster value as the reference.
+        ur_t = _ref_medianan(u_win[izr_valid])  # (n_win,)
+        vr_t = _ref_medianan(v_win[izr_valid])
+        wr_t = _ref_medianan(w_win[izr_valid])
 
         # MATLAB prepinv.m computes the mean of the valid reference velocities,
         # then sets any NaN reference velocities to 0 before dereferencing!

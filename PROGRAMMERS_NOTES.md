@@ -100,10 +100,35 @@ The solved system is `[A_ocean | A_ctd] * [u_ocean; u_ctd_neg] = d`. The solutio
 
 The integration test in `tests/integration/test_inverse_p16n_cast003.py` runs the full pipeline and compares against the LDEO MATLAB reference output `test_data/2015_P16N/003.nc`.
 
-Current status:
-- **u RMSE = 0.0723 m/s** (target: < 0.05 m/s; tests are `xfail`)
-- Correlation r ≈ +0.90 at 0–1000 m; **r ≈ −0.40 at 1000–2000 m** (anti-correlated)
-- n_se = 947 (Python, after fix) vs 827 (MATLAB) — gap reduced but not closed
+Current status (2026-06-27):
+- **u RMSE ≈ 0.0806 m/s** (target: < 0.05 m/s; tests are `xfail`)
+- Correlation r ≈ +0.95 at 0–500 m, r ≈ +0.67 at 1000–2000 m (previously anti-correlated)
+- Anti-correlation at 1000–2000 m is resolved; residual RMSE gap remains at 1000–4400 m
+
+### Root Cause: Reference Subtraction Median vs MATLAB medianan (2026-06-27)
+
+**Bug confirmed**: `prepare_superensembles()` used `np.nanmedian()` for the per-ensemble reference velocity; MATLAB uses `medianan(x, na=0)` which picks the `round(n/2)`-th sorted value.
+
+For 4 reference bins (DL bin 1, DL bin 2, UL bin 1, UL bin 2):
+- `np.nanmedian` returns the **average of the 2nd and 3rd sorted values**
+- MATLAB `medianan(na=0)` returns the **2nd sorted value** (`round(4/2) = 2`)
+
+When the UL instrument has a constant compass offset (~87° relative to DL — confirmed from heading data: downcast DL=115.9°/UL=29.7°, upcast DL=34.1°/UL=305.6°), the UL beam2earth produces Earth-frame velocities that are rotated ~87° from the DL's Earth-frame velocities. This causes DL and UL reference bins to give systematically different velocity values.
+
+**Effect during upcast at 1800m**:
+- DL reference bins: u ≈ −0.060 m/s
+- UL reference bins: u ≈ +0.019 m/s (measuring a rotated component / different shear layer)
+- Python `nanmedian`: (−0.058 + 0.018)/2 = **−0.020** → DL bin deref = −0.040 (wrong)
+- MATLAB `medianan`: **−0.058** (2nd sorted = DL value) → DL bin deref ≈ 0 (correct)
+
+The contaminated Python reference caused a ~0.10 m/s systematic bias and anti-correlation at 1000–2000 m depth.
+
+**Fix applied**: Added `_ref_medianan()` in `inverse.py` (before `_window_boundaries()`), replacing the three `np.nanmedian` calls at lines 192–194 in `prepare_superensembles()`. The function picks `round(n_valid/2)`-th sorted value per column, matching MATLAB exactly.
+
+**Post-fix status**:
+- Anti-correlation at 1000–2000 m eliminated (r went from −0.40 to +0.67)
+- Total u RMSE = 0.0806 (with bin masking), 0-1000m RMSE ~0.025 (excellent)
+- Remaining gap at 1000–2000m (RMSE ≈ 0.10): likely from UL bins contributing observations contaminated by the DL-UL compass offset (UL measures a rotated Earth-frame velocity relative to DL); and 2000-4400m possible anti-correlation with UL-only depth coverage
 
 ### n_se Discrepancy Root Cause (2026-06-27)
 
@@ -113,18 +138,20 @@ Current status:
 
 **MATLAB oversample not yet fully replicated**: MATLAB's `prepinv.m` expands each window symmetrically around its center with `i1l = length(i1)/2 * oversample` (default oversample=1). This creates overlapping windows and increases effective step to N+1 per window. `_window_boundaries` now implements `oversample=1.0` by default but produces n_se=947 vs MATLAB's 827. Remaining ~14% gap is from exact MATLAB rounding differences and the depth variable (MATLAB uses `d.izm(1,:)` = shallowest bin depth; Python uses `ens.z` = CTD depth; both change at ~1.09 m/ens so not a major factor).
 
-**RMSE not improved by n_se fix**: RMSE was 0.0718 before, 0.0723 after (trivial change within solver conditioning noise). The anti-correlation at 1000–2000 m has a different root cause not related to super-ensemble count.
+### Remaining Gap: DL–UL Compass Offset and rotup2down
 
-### Remaining Hypotheses for RMSE Gap
+The remaining RMSE gap at 1000–4400 m is likely caused by the DL–UL compass misalignment affecting the inversion:
 
-The anti-correlation at 1000–2000 m is not caused by:
-- GPS barotropic constraint (removing it doesn't change the correlation)
-- n_se count (increasing from 524 to 947 didn't help)
+**Observation**: UL heading is consistently ~87° less than DL heading throughout the cast (downcast: 86.2°; upcast: 88.5°). After beam2earth, UL bins produce Earth-frame velocities rotated ~87° from DL's, meaning UL u-observations are approximately measuring v_ocean instead of u_ocean.
 
-Requires investigation of MATLAB intermediate arrays (`di.ru`, `di.izm`, `dr.uctd`) to compare directly. Candidate causes:
-1. The observation matrix `A_ocean` depth bin mapping uses `dz` (now 8m vs previously 16m) — finer bins means ~550 depth bins, possibly over-parameterized without smoothing (`smoofac=0`).
-2. `ruvs=0 → wm=inf` at deep bins was patched (Fix I-4, ddof=0) but not verified to be the sole cause at 1000–2000 m.
-3. `_medianan` in Python vs MATLAB's `medianan()` — subtle difference in averaging within a window.
+**MATLAB's `rotup2down=1`** (default from `default.m`) in `prepinv.m`: computes per-ensemble heading residual `hrotcomp = angle((UL_heading − hoff)/DL_heading)` where `hoff` is the cast-mean DL–UL offset. Rotates DL by −hrotcomp/2 and UL by +hrotcomp/2 to align them. Because `hoff ≈ 87°` removes the constant offset, `hrotcomp` is only the small per-ensemble variation (~±1°), so this correction has negligible effect on a constant-offset instrument pair.
+
+**What Python is missing**: The `_ref_medianan` fix corrects the reference subtraction so DL bins have correct deref. But UL bins (with ~87° heading error) still provide wrong u_ocean observations in the inversion (they see v_ocean). With 24 UL bins vs 5 DL bins (after bin masking), the wrong UL observations dominate the solution at depths covered only by UL.
+
+**Next steps to close the RMSE gap**:
+1. Implement `rotup2down=1`: compute mean DL–UL heading offset, then rotate DL by −hrot/2 and UL by +hrot/2 per ensemble before `prepare_superensembles()`. Pass heading arrays (DL and UL) through `EnsembleData` or apply rotation in the test fixture.
+2. Alternatively: apply a fixed 87° compass correction to UL headings in beam2earth (re-run UL beam2earth with `rdi_ul.heading + 87°`). This would fix the fundamental UL Earth-frame measurement error.
+3. Investigate whether MATLAB's `offsetup2down` (step 12 re-form with first-guess) also contributes.
 
 ---
 
