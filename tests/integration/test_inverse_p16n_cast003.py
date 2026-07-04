@@ -80,10 +80,12 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     ctd = load_ctd(cnv_path)
 
     # --- Downlooker ---
+    # gimbaled=False replicates loadrdi.m::b2earth ("fixed sensor case"):
+    # pitch corrected by asin(sin(p)cos(r)/KA), heading used raw.
     u_dl, v_dl, w_dl = beam2earth(
         rdi.u, rdi.v, rdi.w, rdi.e,
         rdi.heading, rdi.pitch, rdi.roll,
-        THETA_DEG, gimbaled=True,
+        THETA_DEG, gimbaled=False, beams_up=False,
     )
     # Rotate from magnetic North to true North.  Our uvrot is CCW-positive, but
     # East magnetic declination is a CW heading shift, so we pass -DROT_DEG.
@@ -95,14 +97,13 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
 
     # --- Uplooker ---
     rdi_ul = load_rdi(ul_path)
-    # UL is mounted face-up (inverted).  The pitch sensor reads the opposite sign
-    # from the DL for the same physical tilt, so negate pitch before beam2earth.
-    # The gimbaled heading correction uses sin(pitch)*sin(roll); wrong pitch sign
-    # corrupts the Earth-frame rotation (confirmed by orientation sweep diag).
+    # UL is mounted face-up (inverted).  loadrdi.m::b2earth handles the
+    # inversion entirely through the up-looking beam matrix (beams_up=True);
+    # heading/pitch/roll from the UL's own sensors are used UNMODIFIED.
     u_ul, v_ul, w_ul = beam2earth(
         rdi_ul.u, rdi_ul.v, rdi_ul.w, rdi_ul.e,
-        rdi_ul.heading, -rdi_ul.pitch, rdi_ul.roll,
-        THETA_DEG, gimbaled=True,
+        rdi_ul.heading, rdi_ul.pitch, rdi_ul.roll,
+        THETA_DEG, gimbaled=False, beams_up=True,
     )
     u_ul, v_ul = uvrot(u_ul, v_ul, -DROT_DEG)
 
@@ -142,7 +143,7 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
         rdi.btrack_vel_ms[0], rdi.btrack_vel_ms[1],
         rdi.btrack_vel_ms[2], rdi.btrack_vel_ms[3],
         rdi.heading, rdi.pitch, rdi.roll,
-        THETA_DEG, gimbaled=True,
+        THETA_DEG, gimbaled=False, beams_up=False,
     )
     bt_u_e, bt_v_e = uvrot(bt_u_e, bt_v_e, -DROT_DEG)
     bvel = np.stack([bt_u_e, bt_v_e, bt_w_e], axis=1)

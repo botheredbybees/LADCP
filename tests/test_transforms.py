@@ -42,13 +42,28 @@ class TestBeam2xyz:
         assert np.isfinite(Vx[0, 0])
 
     def test_vx_from_b1_b2_only(self):
-        """Vx depends only on b1 and b2; Vy depends only on b3 and b4."""
+        """Vx depends only on b1 and b2; Vy depends only on b3 and b4.
+
+        Down-looking (default) matrix per loadrdi.m b2earth: VX = +b1 - b2.
+        """
         theta = np.radians(THETA)
         uvfac = 1.0 / (2.0 * np.sin(theta))
         b = np.zeros((1, 1))
         b1 = np.full((1, 1), 0.5)
         b2 = np.full((1, 1), -0.3)
         Vx, Vy, Vz = beam2xyz(b1, b2, b, b, THETA)
+        expected_Vx = uvfac * (0.5 - (-0.3))
+        assert abs(float(Vx[0, 0]) - expected_Vx) < 1e-10
+        assert float(Vy[0, 0]) == 0.0
+
+    def test_vx_up_looking_matrix(self):
+        """Up-looking matrix per loadrdi.m b2earth: VX = -b1 + b2."""
+        theta = np.radians(THETA)
+        uvfac = 1.0 / (2.0 * np.sin(theta))
+        b = np.zeros((1, 1))
+        b1 = np.full((1, 1), 0.5)
+        b2 = np.full((1, 1), -0.3)
+        Vx, Vy, Vz = beam2xyz(b1, b2, b, b, THETA, beams_up=True)
         expected_Vx = uvfac * (-0.5 + (-0.3))
         assert abs(float(Vx[0, 0]) - expected_Vx) < 1e-10
         assert float(Vy[0, 0]) == 0.0
@@ -65,11 +80,24 @@ class TestBeam2xyz:
         assert float(Vx[0, 0]) == 0.0
 
     def test_vz_from_all_beams(self):
-        """Vz = wfac * (-b1 - b2 - b3 - b4)."""
+        """Down-looking: Vz = wfac * (+b1 + b2 + b3 + b4).
+
+        Positive beam velocity = water toward the (down-facing) transducer
+        = upward water motion, so Vz must come out positive.
+        """
         theta = np.radians(THETA)
         wfac = 1.0 / (4.0 * np.cos(theta))
         b = np.full((1, 1), 0.1)
         Vx, Vy, Vz = beam2xyz(b, b, b, b, THETA)
+        expected_Vz = wfac * (+0.4)
+        assert abs(float(Vz[0, 0]) - expected_Vz) < 1e-10
+
+    def test_vz_up_looking(self):
+        """Up-looking: Vz = wfac * (-b1 - b2 - b3 - b4)."""
+        theta = np.radians(THETA)
+        wfac = 1.0 / (4.0 * np.cos(theta))
+        b = np.full((1, 1), 0.1)
+        Vx, Vy, Vz = beam2xyz(b, b, b, b, THETA, beams_up=True)
         expected_Vz = wfac * (-0.4)
         assert abs(float(Vz[0, 0]) - expected_Vz) < 1e-10
 
@@ -100,9 +128,9 @@ class TestBeam2earth:
 
         u, v, w = beam2earth(b1, b2, b3, b4, heading, pitch, roll, theta_deg)
 
-        Vx_expected = uvfac * (-b1 + b2)
+        Vx_expected = uvfac * (+b1 - b2)
         Vy_expected = uvfac * (-b3 + b4)
-        Vz_expected = wfac * (-b1 - b2 - b3 - b4)
+        Vz_expected = wfac * (+b1 + b2 + b3 + b4)
 
         np.testing.assert_allclose(u, Vx_expected, rtol=1e-10)
         np.testing.assert_allclose(v, Vy_expected, rtol=1e-10)
