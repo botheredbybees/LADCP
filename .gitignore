@@ -3,6 +3,10 @@ docs/legacy/
 test_data/*
 !test_data/sources.md
 
+# octave differential harness -- bulky generated outputs only
+octave_harness/dumps/
+octave_harness/work/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

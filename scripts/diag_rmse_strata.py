@@ -42,7 +42,10 @@ DROT_DEG = 12.318441
 STRATA = [(0, 1000), (1000, 2000), (2000, 3000), (3000, 4500)]
 
 
-def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool = False):
+def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool = False, stages: dict | None = None):
+    """stages, if given a dict, is populated with intermediate pipeline
+    outputs (post-transform combined arrays, post-edit ensemble, super-
+    ensembles, final result) for octave_harness/diff_stages.py (M3)."""
     rdi = load_rdi(data_dir / "003DL000.000")
     rdi_ul = load_rdi(data_dir / "003UL000.000")
     ctd = load_ctd(data_dir / "003_01.cnv")
@@ -111,9 +114,13 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
         izd=izd, izu=izu,
         slat=np.full(rdi.nens, np.nan), slon=np.full(rdi.nens, np.nan),
     )
+    if stages is not None:
+        stages["post_transform"] = ens
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
     ens = edit_large_velocities(ens)
     ens = edit_w_outliers(ens)
+    if stages is not None:
+        stages["post_edit"] = ens
     if rot or offset:
         # offsetup2down (process_cast.m step 12) is always paired with
         # rotup2down (step 10) in LDEO's default pipeline.
@@ -121,6 +128,8 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
 
     def _solve(ens: EnsembleData):
         se = prepare_superensembles(ens)
+        if stages is not None:
+            stages["superensembles"] = se
         return compute_inverse(
             se, u_ship=u_ship, v_ship=v_ship,
             sadcp_z=npz["z"] if npz is not None else None,
@@ -139,6 +148,8 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
         ens, _ = offsetup2down(ens, first_guess.z, first_guess.u, first_guess.v)
 
     res = _solve(ens)
+    if stages is not None:
+        stages["result"] = res
     return res, (ref_z, ref_u, ref_v, ref_nvel)
 
 
