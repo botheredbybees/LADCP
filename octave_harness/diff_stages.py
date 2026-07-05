@@ -15,11 +15,12 @@ Convention notes (see PROGRAMMERS_NOTES.md "Combined DL+UL array layout"):
     DL-on-bottom, exactly matching our own EnsembleData/SuperEnsemble layout
     (0-based izd = rows 25..49, izu = rows 24..0 reversed). No remapping
     needed beyond the 1-based/0-based offset.
-  - Stage A (post-transform) is matched by nearest ensemble time: Octave's
-    step01 dump has already been windowed to the profile time range
-    (8679 ensembles, "extracting 8679 ensembles as profile" in the log) vs
-    our un-windowed per-file arrays -- same nearest-time-match approach as
-    M1's diff_ingestion.py, needed because ping intervals are non-constant.
+  - Stage A (post-edit, Octave step09 vs Python's post_edit stage -- see the
+    inline comment at the Stage A block below for why step09 and not step01)
+    is matched by nearest ensemble time: Octave's dumps have already been
+    windowed to the profile time range vs our un-windowed per-file arrays --
+    same nearest-time-match approach as M1's diff_ingestion.py, needed
+    because ping intervals are non-constant.
   - Stages C/D (superensembles, final result) are matched by nearest DEPTH
     (z), the natural key once ensembles have been depth-averaged.
 """
@@ -53,12 +54,27 @@ def _nearest_match(key_a, key_b):
     return order[nearest], np.abs(kb_sorted[nearest] - key_a)
 
 
-def _row_diff(name, oct_field, py_field, oct_key, py_key, key_label, rows=None, angular=False):
+def _row_diff(name, oct_field, py_field, oct_key, py_key, key_label,
+              rows=None, angular=False, max_key_err=None):
     """Match columns of oct_field/py_field by nearest oct_key<->py_key, diff
-    matched rows. Returns a verdict row (name, max|diff|, rms, %match, verdict)."""
+    matched rows. max_key_err, if set, drops pairs whose key distance exceeds
+    it (depth-bin-aware pairing for Stage C) and reports the drop count.
+    Also prints mask_disagree -- the % of matched cells where the two
+    pipelines disagree on finite-vs-masked (isfinite(o) != isfinite(p)) --
+    separately from the rms, which is restricted to both-finite cells only,
+    so a masking-policy difference doesn't get conflated with a velocity
+    difference (Task 4's P1 finding: the Stage A 14 m/s max|diff| was a
+    Python-side unmasked outlier, not a real divergence).
+    Returns a verdict row (name, max|diff|, rms, %match, verdict)."""
     idx, key_err = _nearest_match(oct_key, py_key)
-    o = np.asarray(oct_field, dtype=float)
-    p = np.asarray(py_field, dtype=float)[..., idx]
+    keep = np.ones(len(idx), dtype=bool)
+    if max_key_err is not None:
+        keep = key_err <= max_key_err
+        print(f"    [{name}] depth-tolerance {max_key_err:.2f}: "
+              f"kept {keep.sum()}/{len(keep)} pairs")
+    o = np.asarray(oct_field, dtype=float)[..., keep]
+    p = np.asarray(py_field, dtype=float)[..., idx[keep]]
+    key_err = key_err[keep]
     if rows is not None:
         o = o[rows]
         p = p[rows]
@@ -67,11 +83,14 @@ def _row_diff(name, oct_field, py_field, oct_key, py_key, key_label, rows=None, 
         diff = (diff + 180.0) % 360.0 - 180.0
     finite = np.isfinite(o) & np.isfinite(p)
     pct_finite_match = 100.0 * finite.sum() / o.size if o.size else float("nan")
+    mask_disagree = (
+        100.0 * (np.isfinite(o) != np.isfinite(p)).mean() if o.size else float("nan")
+    )
     if finite.sum() == 0:
         return (name, float("nan"), float("nan"), pct_finite_match, "NO-OVERLAP")
     max_diff = float(np.nanmax(np.abs(diff[finite])))
     rms_diff = float(np.sqrt(np.nanmean(diff[finite] ** 2)))
-    mean_key_err = float(np.mean(key_err))
+    mean_key_err = float(np.mean(key_err)) if key_err.size else float("nan")
     if max_diff < 1e-6:
         verdict = "MATCH"
     elif rms_diff < 0.02:
@@ -80,7 +99,8 @@ def _row_diff(name, oct_field, py_field, oct_key, py_key, key_label, rows=None, 
         verdict = "DIVERGES"
     print(
         f"{name:<28}{key_label:<10}max|diff|={max_diff:>10.4g}  rms={rms_diff:>10.4g}  "
-        f"%finite-match={pct_finite_match:5.1f}  mean_key_err={mean_key_err:.3g}  [{verdict}]"
+        f"%finite-match={pct_finite_match:5.1f}  mean_key_err={mean_key_err:.3g}  "
+        f"mask_disagree={mask_disagree:5.1f}%  [{verdict}]"
     )
     return (name, max_diff, rms_diff, pct_finite_match, verdict)
 
@@ -117,26 +137,44 @@ def main() -> None:
     ]:
         verdicts.append(_row_diff(field, oct_arr, py_arr, oct_time, py_time, "time"))
 
+    # Task 4's (P1) named next measurement: full-array d.izm - ens.izm
+    # statistics, to quantify the ~15 m depth-registration offset it found
+    # at two sample columns. izm is METRES OF DEPTH, not m/s -- a large rms
+    # here is the EXPECTED finding (confirming/quantifying the offset), so
+    # a DIVERGES verdict on this row is correct and informative, not a
+    # velocity divergence. Kept out of the velocity-only FIRST-DIVERGES
+    # tally in the Summary below.
+    print("    NOTE: izm units are metres of depth, not m/s -- DIVERGES here "
+          "means the ~15 m registration offset (P1), not a velocity gap.")
+    izm_verdict = _row_diff(
+        "izm (depth registration, all bins)", d9.izm, ens_pe.izm,
+        oct_time, py_time, "time",
+    )
+    verdicts.append(izm_verdict)
+
     # --- Stage C: super-ensembles (Octave step12 di vs our se) ---
-    # CAVEAT: matched by nearest depth (z) -- superensemble bin centers don't
+    # Depth-bin-aware pairing (Task 5, P2): superensemble bin centers don't
     # necessarily coincide between the two pipelines (different averaging
-    # windows/edges), so a nonzero mean_key_err here reflects bin-grid
-    # misalignment as well as genuine data differences. Not a depth-bin-aware
-    # comparison; a DIVERGES verdict here needs that caveat, not a bare claim.
+    # windows/edges), so unfiltered nearest-depth matching (mean_key_err was
+    # ~1.55 m -- non-trivial) mixed bin-grid misalignment into the diff.
+    # Pairs whose depth distance exceeds half the median super-ensemble
+    # depth spacing are now dropped instead of force-matched.
     print("\n--- Stage C: super-ensembles (the solver's actual input) ---")
-    print("    CAVEAT: nearest-depth matching only -- see module docstring/comment above")
     step12 = _load(12)
     di = step12["di"]
     se = stages["superensembles"]
     oct_z = np.asarray(di.z, dtype=float)
     py_z = se.z
+    dz_se = float(np.nanmedian(np.abs(np.diff(np.sort(oct_z)))))
+    print(f"    median super-ensemble depth spacing dz_se = {dz_se:.2f} m")
     for field, oct_arr, py_arr in [
         ("ru (super-ens east vel)", di.ru, se.ru),
         ("rv (super-ens north vel)", di.rv, se.rv),
         ("rw (super-ens vert vel)", di.rw, se.rw),
         ("weight (super-ens)", di.weight, se.weight),
     ]:
-        verdicts.append(_row_diff(field, oct_arr, py_arr, oct_z, py_z, "depth"))
+        verdicts.append(_row_diff(field, oct_arr, py_arr, oct_z, py_z, "depth",
+                                  max_key_err=dz_se / 2))
 
     # --- Stage D: final result (Octave step17 dr vs our InverseResult) ---
     print("\n--- Stage D: final inverse solution (u/v profile) ---")
@@ -153,14 +191,24 @@ def main() -> None:
     print("\n--- Summary ---")
     print(f"{'stage/field':<28}{'max|diff|':>12}{'rms':>12}{'%match':>10}{'verdict':>12}")
     first_diverge = None
+    first_diverge_velocity = None
     for name, max_diff, rms_diff, pct, verdict in verdicts:
         print(f"{name:<28}{max_diff:>12.4g}{rms_diff:>12.4g}{pct:>9.1f}%{verdict:>12}")
         if verdict == "DIVERGES" and first_diverge is None:
             first_diverge = name
+        # izm is metres of depth, not m/s -- its expected ~15 m DIVERGES
+        # (P1's depth-registration finding) must not stand in for a
+        # velocity verdict, so it's tracked separately here.
+        if verdict == "DIVERGES" and first_diverge_velocity is None and "izm" not in name:
+            first_diverge_velocity = name
     if first_diverge:
         print(f"\nFIRST DIVERGES: {first_diverge}")
     else:
         print("\nNo stage DIVERGES (within the thresholds used here).")
+    print(
+        "FIRST DIVERGES (velocity fields only, excl. izm depth-registration): "
+        f"{first_diverge_velocity if first_diverge_velocity else 'none'}"
+    )
 
 
 if __name__ == "__main__":

@@ -419,3 +419,136 @@ Octave's editing chain (loadrdi `outlier()` + `edit_data.m`) removed it.
 (Test suite not run this session: no tracked pipeline code under `src/`
 or `scripts/` was touched — only the diagnostic script
 `diag_stage_a.py` and this report.)
+
+## P2 — stage-diff rerun with corrected methodology (session 2026-07-06)
+
+Methodology changes vs 2026-07-05: **masking-policy branch applied** (P1's
+decision-table row 1) — `_row_diff` keeps its existing both-finite
+restriction on rms/max|diff|, and now also prints `mask_disagree=`, the %
+of matched cells where the two pipelines disagree on finite-vs-masked, so
+masking differences are visible separately from velocity differences. No
+row/column remapping was applied — P1 ruled that out (UL flip, fixed row
+shifts). A new Stage A row was added diffing `d9.izm` vs Python's post-edit
+`ens.izm` (Task 4's/P1's named next measurement, same time-key matching as
+the velocity fields), to quantify the ~15 m depth-registration offset P1
+found at two sampled columns.
+Stage C now pairs super-ensembles only within dz_se/2 = **2.51 m**
+(dz_se = 5.01 m, the median super-ensemble depth spacing) — **648/828**
+pairs kept for all four Stage C fields (ru/rv/rw/weight all share the same
+z-based pairing, so the kept-count is identical across them).
+
+Full rerun output (`uv run python octave_harness/diff_stages.py`):
+
+```
+--- Stage A: post-edit (masking + sidelobe + large-vel + w-outlier QA) ---
+ru (east vel, all bins)     time      max|diff|=     14.11  rms=    0.2146  %finite-match= 38.0  mean_key_err=1.55e-07  mask_disagree= 11.6%  [DIVERGES]
+rv (north vel, all bins)    time      max|diff|=     11.56  rms=    0.2087  %finite-match= 38.0  mean_key_err=1.55e-07  mask_disagree= 11.6%  [DIVERGES]
+rw (vert vel, all bins)     time      max|diff|=     5.153  rms=    0.4653  %finite-match= 38.0  mean_key_err=1.55e-07  mask_disagree= 11.6%  [DIVERGES]
+weight (post-edit)          time      max|diff|=    0.9559  rms=    0.1679  %finite-match= 41.5  mean_key_err=1.55e-07  mask_disagree= 51.1%  [DIVERGES]
+    NOTE: izm units are metres of depth, not m/s -- DIVERGES here means the ~15 m registration offset (P1), not a velocity gap.
+izm (depth registration, all bins)       max|diff|=     108.8  rms=     47.91  %finite-match=100.0  mean_key_err=1.55e-07  mask_disagree=  0.0%  [DIVERGES]
+
+--- Stage C: super-ensembles (the solver's actual input) ---
+    median super-ensemble depth spacing dz_se = 5.01 m
+    [ru (super-ens east vel)] depth-tolerance 2.51: kept 648/828 pairs
+ru (super-ens east vel)     depth     max|diff|=    0.9057  rms=    0.1118  %finite-match= 38.4  mean_key_err=1.09  mask_disagree=  9.5%  [DIVERGES]
+    [rv (super-ens north vel)] depth-tolerance 2.51: kept 648/828 pairs
+rv (super-ens north vel)    depth     max|diff|=    0.7186  rms=    0.1076  %finite-match= 38.4  mean_key_err=1.09  mask_disagree=  9.5%  [DIVERGES]
+    [rw (super-ens vert vel)] depth-tolerance 2.51: kept 648/828 pairs
+rw (super-ens vert vel)     depth     max|diff|=     2.339  rms=     1.228  %finite-match= 38.4  mean_key_err=1.09  mask_disagree=  9.5%  [DIVERGES]
+    [weight (super-ens)] depth-tolerance 2.51: kept 648/828 pairs
+weight (super-ens)          depth     max|diff|=     0.901  rms=    0.1839  %finite-match= 41.3  mean_key_err=1.09  mask_disagree= 55.9%  [DIVERGES]
+
+--- Stage D: final inverse solution (u/v profile) ---
+u (final east vel)          depth     max|diff|=     0.287  rms=    0.0933  %finite-match=100.0  mean_key_err=2.5  mask_disagree=  0.0%  [DIVERGES]
+v (final north vel)         depth     max|diff|=     0.173  rms=   0.06298  %finite-match=100.0  mean_key_err=2.5  mask_disagree=  0.0%  [DIVERGES]
+
+--- Summary ---
+stage/field                    max|diff|         rms    %match     verdict
+ru (east vel, all bins)            14.11      0.2146     38.0%    DIVERGES
+rv (north vel, all bins)           11.56      0.2087     38.0%    DIVERGES
+rw (vert vel, all bins)            5.153      0.4653     38.0%    DIVERGES
+weight (post-edit)                0.9559      0.1679     41.5%    DIVERGES
+izm (depth registration, all bins)       108.8       47.91    100.0%    DIVERGES
+ru (super-ens east vel)           0.9057      0.1118     38.4%    DIVERGES
+rv (super-ens north vel)          0.7186      0.1076     38.4%    DIVERGES
+rw (super-ens vert vel)            2.339       1.228     38.4%    DIVERGES
+weight (super-ens)                 0.901      0.1839     41.3%    DIVERGES
+u (final east vel)                 0.287      0.0933    100.0%    DIVERGES
+v (final north vel)                0.173     0.06298    100.0%    DIVERGES
+
+FIRST DIVERGES: ru (east vel, all bins)
+FIRST DIVERGES (velocity fields only, excl. izm depth-registration): ru (east vel, all bins)
+```
+
+**Regression sentinel check:** Stage D u rms = 0.0933, v rms = 0.06298 —
+matches the pre-refactor 0.093/0.063 (P1/2026-07-05 baseline). The
+`_row_diff` refactor did not disturb Stage A/D behavior.
+
+**izm full-array result (Task 4's named next measurement):** over all
+50 rows × 7682 time-matched columns (100% finite-match — `izm` is a
+coordinate field, not independently masked, so mask_disagree=0% here),
+`d9.izm − ens_pe.izm` has **mean +34.2 m, median +31.0 m, rms 47.9 m,
+max|diff| 108.8 m, min diff −20.8 m**. This is larger and more variable
+than P1's two-column estimate (~14.4–15.0 m) — the 2026-07-06 follow-up
+investigation (per-row and per-column breakdown, not committed to
+`diff_stages.py` since it is ad-hoc diagnosis, not a reusable comparison)
+found the offset is **uniform across all 50 rows** (row-independent, ruling
+out a row/bin-index error) but **varies strongly with time/cast-depth**:
+column-mean diff ranges from about −20 m near the start of the cast to
+~+90–109 m near the cast's maximum depth (correlation of per-column mean
+diff with per-column mean depth = −0.80; sign convention: `izm` is
+negative-down, so this correlation means the offset grows in magnitude as
+the cast gets deeper). It is not a clean proportional (percentage-of-depth)
+scaling either (diff/|depth| ratios range roughly −0.03 to +0.08 across the
+depth range, not a single constant fraction). **Net effect on the P1
+"~15 m offset" characterization:** confirmed as a real, non-trivial,
+depth/time-varying depth-registration difference between the two
+pipelines — larger overall (mean ~34 m) than the two sampled columns
+suggested, growing with cast depth rather than being a fixed vertical
+shift. Root cause (CTD-time alignment, distance-to-first-bin/blank
+handling, or a sound-speed/pressure-integration difference that
+compounds with depth) is still not isolated — flagged for a future
+session, not fixed here per this task's comparison-only scope.
+
+**FIRST DIVERGES: ru (east vel, all bins), Stage A.** The `izm`
+depth-registration row is technically the largest-magnitude DIVERGES
+entry in the table (rms 47.9), but its units are metres of depth, not
+m/s, and it is excluded from the velocity-only tally the harness now
+prints separately: **FIRST DIVERGES (velocity fields only) is also `ru`
+(east vel, all bins), Stage A** (rms 0.215, max|diff| 14.11). The
+`mask_disagree` columns show this isn't primarily a masking-policy
+artifact either: only 11.6% of Stage A velocity cells disagree on
+finite-vs-masked (P1's "38% finite-overlap" is dominated by both-nan
+cells neither pipeline keeps, as P1 established), and the max|diff| cell
+is itself a both-finite cell (P1 traced it to a Python-side unmasked
+near-surface outlier) — so the residual 0.19–0.27 m/s Stage A rms on
+clean, both-finite cells (P1's "still unresolved" item 4) persists after
+this session's fixes and is the honest first velocity divergence.
+
+Read together with the P3 solver-only result (**solver exonerated**: given
+identical `di` input, Python-vs-Octave-dr RMSE is 0.008–0.010 m/s, roughly
+10× below the full-pipeline Stage D gap and far below the Python-vs-archive
+gap), the Python pipeline's gap against LDEO is attributed to: **Stage A
+edit/masking policy plus the newly-quantified depth-registration
+difference, both acting before the solver ever runs.** The solver
+(`compute_inverse()`/`getinv.m`) is not the source of the gap — P3 showed
+it reproduces Octave's answer closely given identical input. The gap
+instead accumulates upstream: Stage A already shows a genuine ~0.2 m/s rms
+velocity divergence on both-finite cells (not explained by masking
+disagreement or comparison alignment — P1 ruled out row shifts/UL flip),
+and this session's izm measurement shows the two pipelines don't even
+agree on which physical depth a given bin/time cell represents (offset
+growing from near 0 to ~100 m over the cast). Because a depth-registration
+difference of that size changes which raw cells land in which
+super-ensemble depth bin, it plausibly explains why Stage C's rms (0.11
+u / 0.11 v, now measured on depth-tolerance-filtered pairs so it isn't a
+comparison artifact) and Stage D's rms (0.093 u / 0.063 v) don't shrink
+back toward P3's solver-only ~0.01: the solver is being fed a
+super-ensemble input that itself already differs from Octave's, because
+the two pipelines assign raw ADCP bins to different depths before
+averaging. The single highest-leverage next step is isolating *why* `izm`
+diverges (CTD time-base alignment, distance-to-first-bin/blank handling,
+or sound-speed/pressure integration) — that is the one remaining
+unexplained mechanism standing between the solver-exoneration result and
+a fully closed gap.
