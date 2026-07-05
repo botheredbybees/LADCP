@@ -322,3 +322,100 @@ arrays, shape (50, 7682) each). The REPORT.md 2026-07-05 candidate "step 8
 applies a correction our Python pipeline does not capture" is refuted; the
 Stage A residual must come from comparison alignment or genuine
 editing/masking differences (see below).
+
+### P1b — row/mask alignment diagnostics (`diag_stage_a.py` part 2)
+
+Comparison: Octave step09 `d.ru` (50, 7682) vs Python `post_edit` `ens.u`,
+columns matched by nearest ensemble time (n=7682, mean time error 13.4 ms,
+max 63.9 ms — well under the ~1 s ping interval, so column matching is
+sound; note the task brief's expectation of ~13 us was off by 1000x, which
+changes nothing at these ping rates).
+
+**izm boundary check (best-populated column, octave col 497 / python col
+1369):** depth is monotonic across the UL/DL boundary (numpy rows 24|25)
+in BOTH pipelines — the combined-array assembly order is correct on both
+sides. However, the izm *values* at the same rows and matched time differ
+systematically:
+
+    rows 22..27  octave: [-594.9 -602.8 -610.7 -627.1 -635.1 -643.0]
+                 python: [-580.3 -588.3 -596.3 -612.2 -620.2 -628.2]
+
+Octave registers every bin 14.4–14.9 m deeper than Python (bin length
+~8 m, so ~1.8 bin lengths). The same offset (~15.0 m) appears at the
+max-diff neighborhood near the start of the cast (cols 90–94, rows 19–23:
+octave izm −34.5…−71.0 vs python −19.5…−55.4) — i.e. a roughly constant
+**~15 m depth-registration offset between the two pipelines**, present in
+both the UL and DL blocks.
+
+**Row-shift scan (mean per-row rms of octave row r vs python row r+s,
+both-finite cells only, rows with >100 overlapping cells):**
+
+| shift s | UL rows 0-24 | DL rows 25-49 |
+|---|---|---|
+| −2 | 0.3818 | 0.2066 |
+| −1 | 0.3079 | 0.2016 |
+|  0 | 0.2733 | 0.1944 |
+| +1 | 0.2687 | **0.1941** |
+| +2 | **0.2536** | 0.1952 |
+
+UL block flipped: rms 0.9635 (n=8689) — much worse; **UL orientation flip
+ruled out**. No shift collapses the residual (best improvement is UL
+s=+2, 0.2733→0.2536, ~7%; DL is flat to <1%), so **a fixed row
+misalignment in the comparison is ruled out** as the cause of the Stage A
+rms. The mild monotonic preference for positive s in the UL block is
+consistent with the ~1.8-bin depth offset above (python row r+2 sits
+nearest octave row r in depth) where near-surface shear is strong, but it
+is a small effect, not the headline.
+
+**Mask breakdown:** both-finite 38.0%, octave-only 5.9%, python-only
+5.8%, both-nan 50.4%. The low both-finite fraction is dominated by cells
+neither pipeline keeps (both-nan 50.4% — far bins beyond range), not by
+mask disagreement (11.7% of cells total). The disagreement is strongly
+row-structured:
+
+- Rows 24–25 (the instrument-nearest bin of UL and DL): Octave keeps only
+  1709/1647 of 7682 columns vs Python's 7551/7202 — Octave's editing
+  masks the first bin of each looker far more aggressively.
+- Outer UL rows: Octave keeps more than Python (row 19: 4587 vs 3719;
+  row 20: 6267 vs 5167) — Python masks more far-range UL cells,
+  directionally consistent with Python registering bins ~15 m shallower
+  so its surface/sidelobe editor cuts more (plausible link, not proven
+  here).
+
+**Max-diff cell:** 14.110 m/s at row 21, matched col 92 (near-surface,
+early cast). The neighborhoods show Octave with plausible velocities
+(−0.147…−0.415 m/s) while Python contains −14.42 and +2.19 m/s garbage
+cells its editor did not mask. **The headline "14 m/s divergence" is a
+Python-side unmasked outlier, not a real velocity difference** — the
+value is physically impossible and absent from Octave's array because
+Octave's editing chain (loadrdi `outlier()` + `edit_data.m`) removed it.
+
+**Verdict (decision-table rows that matched):**
+
+1. *Named for the headline symptoms:* the 14 m/s max|diff| is an
+   editing/masking-policy difference (Python retains near-surface garbage
+   Octave masks); the 38% finite-overlap is dominated by both-nan (50.4%)
+   plus row-structured mask disagreement (rows 24–25 and outer UL rows).
+   Neither is a real 14 m/s velocity divergence.
+2. *New genuine finding:* a ~15 m (~1.8 bin) depth-registration offset in
+   `izm` between the pipelines, uniform across UL/DL at both inspected
+   columns. This does not change `ru` at a given (bin, time) but shifts
+   which depth every sample is later binned to — directly relevant to the
+   superensemble (Stage C) and final-profile comparisons. Task 5 should
+   add a `d.izm` vs `ens.izm` rms/offset row to Stage A.
+3. *Ruled out:* UL-block flip (rms 0.9635 vs ≤0.27 unflipped), fixed row
+   shift as the cause (no s collapses the residual), combined-array
+   assembly error (izm monotonic across the boundary in both pipelines),
+   and column/time mismatch (13.4 ms mean vs ~1 s ping interval).
+4. *Still unresolved:* the residual ~0.19 (DL) / 0.27 (UL) m/s rms on
+   both-finite cells at s=0 — not explained by any alignment artifact
+   tested here. Single most informative next measurement: full-array
+   `d.izm − ens.izm` statistics over matched columns to confirm the
+   ~15 m offset is constant and trace its source (CTD-time alignment,
+   distance-to-first-bin / blank handling, or surface offset); in
+   parallel Task 5 should report mask-disagreement % as its own Stage A
+   metric and keep rms restricted to both-finite cells.
+
+(Test suite not run this session: no tracked pipeline code under `src/`
+or `scripts/` was touched — only the diagnostic script
+`diag_stage_a.py` and this report.)
