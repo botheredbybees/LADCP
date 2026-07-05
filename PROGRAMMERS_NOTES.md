@@ -100,10 +100,71 @@ The solved system is `[A_ocean | A_ctd] * [u_ocean; u_ctd_neg] = d`. The solutio
 
 The integration test in `tests/integration/test_inverse_p16n_cast003.py` runs the full pipeline and compares against the LDEO MATLAB reference output `test_data/2015_P16N/003.nc`.
 
-Current status (2026-06-27):
-- **u RMSE ≈ 0.0806 m/s** (target: < 0.05 m/s; tests are `xfail`)
-- Correlation r ≈ +0.95 at 0–500 m, r ≈ +0.67 at 1000–2000 m (previously anti-correlated)
-- Anti-correlation at 1000–2000 m is resolved; residual RMSE gap remains at 1000–4400 m
+Current status (2026-07-05, `scripts/diag_rmse_strata.py`, convention fix applied,
+rotup2down NOT applied — see below):
+
+| stratum | n | u RMSE | v RMSE | r(u) |
+|---|---|---|---|---|
+| TOTAL | 520 | 0.0678 | 0.0573 | +0.483 |
+| 0–1000 m | 120 | 0.0142 | 0.0195 | +0.970 |
+| 1000–2000 m | 121 | 0.1034 | 0.0352 | +0.748 |
+| 2000–3000 m | 122 | 0.0463 | 0.0735 | +0.576 |
+| 3000–4500 m | 157 | 0.0720 | 0.0737 | +0.014 |
+
+Target: TOTAL RMSE < 0.05 m/s (tests are `xfail`; not yet met). 0–1000 m is already
+excellent; the gap is concentrated at depth, especially 1000–2000 m u RMSE.
+
+### UL transform-convention fix (2026-07-05)
+
+The `~87°`/`~90°` DL–UL heading disagreement previously blamed on a compass fault
+(see the retired root-cause note below) was in fact a Python transform-convention
+bug: `beam2earth` was not applying the correct up/down beam-matrix sign convention
+for the uplooker (per `loadrdi.m::b2earth`, which uses a different beam→instrument
+matrix depending on `beams_up`). Fixing the convention (commit `f3569c4`) makes each
+instrument's Earth-frame velocity correct using its OWN heading — no compass-angle
+hardcode needed. `scripts/diag_ul_dl_rotation.py` (E1) confirms the residual UL→DL
+rotation after the fix is noise-dominated around 0° (circ mean −8° with prior 2 fold
+variability, downcast +5°, upcast −35°, model rho ~0.1–0.2 — i.e. not a coherent
+rotation), not a systematic ~87–90° bias. See `VALIDATION_PLAN.md` for the full
+reasoning that led to retiring the "hardcode +87°" option.
+
+### rotup2down: implemented, tested, tried, does not help this cast (2026-07-05)
+
+`rotup2down()` in `src/ladcp/solution/inverse.py` is a faithful line-by-line port of
+`prepinv.m` lines 294–418 (`rotup2down==1`, harmonize per-ensemble DL/UL heading
+fluctuation after removing the cast-mean offset `hoff` via `compoff`). Verified
+against the legacy source, including the MATLAB/Python `uvrot` sign-convention
+inversion (MATLAB's `uvrot` negates its angle internally; Python's does not, so a
+MATLAB call `uvrot(x,y,-hrot/2)` is replicated by Python `uvrot(x,y,+hrot/2)`) and
+the bottom-track rotation using the raw (non-NaN-guarded) `hrot`. Three unit tests in
+`tests/test_inverse.py` cover the no-op constant-offset case, the fluctuation-split
+case, and non-mutation.
+
+Wired into both the integration test fixture and `diag_rmse_strata.py` (`rot=True`
+config) and measured:
+
+| config | TOTAL u RMSE | TOTAL v RMSE | r(u) | 0–1000m u RMSE |
+|---|---|---|---|---|
+| convention fix only (baseline) | 0.0678 | 0.0573 | +0.483 | 0.0142 |
+| + rotup2down | 0.0755 | 0.0552 | +0.381 | 0.0327 |
+
+rotup2down **worsens** u RMSE almost everywhere, most severely in the 0–1000 m
+stratum (already the best-performing region), and only marginally improves v RMSE
+in the two deepest strata. A sign-bug was ruled out empirically: running the same
+comparison with the DL/UL rotation directions swapped gives 0.0754 TOTAL u RMSE
+(no material difference from the current sign, and still worse than baseline) — if
+the correction were undoing a real physical misalignment, flipping the sign would
+swing the result the other way instead of landing on the same degradation. The
+per-ensemble `hrot` residual itself is small (mean 0.7°, std 7.3°, cast 003) and is
+most plausibly per-instrument compass jitter rather than a genuine mechanical
+flex between the two frames — "correcting" for it injects that jitter into u/v
+instead of removing a real signal.
+
+**Decision: not committed.** The implementation is stashed (`git stash list`, not in
+the working tree) rather than discarded, in case a future cast or instrument pair
+(e.g. Nuyina's own rosette, with different mounting rigidity) shows a real
+per-ensemble heading disagreement worth correcting. Do not re-apply it here without
+new evidence the residual is signal, not noise.
 
 ### Root Cause: Reference Subtraction Median vs MATLAB medianan (2026-06-27)
 
@@ -113,7 +174,13 @@ For 4 reference bins (DL bin 1, DL bin 2, UL bin 1, UL bin 2):
 - `np.nanmedian` returns the **average of the 2nd and 3rd sorted values**
 - MATLAB `medianan(na=0)` returns the **2nd sorted value** (`round(4/2) = 2`)
 
-When the UL instrument has a constant compass offset (~87° relative to DL — confirmed from heading data: downcast DL=115.9°/UL=29.7°, upcast DL=34.1°/UL=305.6°), the UL beam2earth produces Earth-frame velocities that are rotated ~87° from the DL's Earth-frame velocities. This causes DL and UL reference bins to give systematically different velocity values.
+At the time, the ~87° DL/UL heading disagreement (downcast DL=115.9°/UL=29.7°,
+upcast DL=34.1°/UL=305.6°) was attributed to a compass fault; it was later found to
+be a `beam2earth` transform-convention bug, fixed in `f3569c4` (see "UL
+transform-convention fix" above) — both instruments' raw headings were correct. At
+the time of this fix the wrong convention was still in place, so UL beam2earth
+still produced Earth-frame velocities rotated ~87° from DL's, and this is what
+caused DL and UL reference bins to give systematically different velocity values.
 
 **Effect during upcast at 1800m**:
 - DL reference bins: u ≈ −0.060 m/s
@@ -128,7 +195,11 @@ The contaminated Python reference caused a ~0.10 m/s systematic bias and anti-co
 **Post-fix status**:
 - Anti-correlation at 1000–2000 m eliminated (r went from −0.40 to +0.67)
 - Total u RMSE = 0.0806 (with bin masking), 0-1000m RMSE ~0.025 (excellent)
-- Remaining gap at 1000–2000m (RMSE ≈ 0.10): likely from UL bins contributing observations contaminated by the DL-UL compass offset (UL measures a rotated Earth-frame velocity relative to DL); and 2000-4400m possible anti-correlation with UL-only depth coverage
+- Remaining gap at 1000–2000m (RMSE ≈ 0.10): at the time, attributed to UL bins
+  contaminated by the (mis-diagnosed) compass offset. With the transform-convention
+  fix now applied, current TOTAL u RMSE is 0.0678 (see "Validation: P16N Cast 003"
+  status table above) — improved but still above the 0.05 target; the residual gap
+  is not yet root-caused (rotup2down does not close it — see below).
 
 ### n_se Discrepancy Root Cause (2026-06-27)
 
@@ -138,20 +209,17 @@ The contaminated Python reference caused a ~0.10 m/s systematic bias and anti-co
 
 **MATLAB oversample not yet fully replicated**: MATLAB's `prepinv.m` expands each window symmetrically around its center with `i1l = length(i1)/2 * oversample` (default oversample=1). This creates overlapping windows and increases effective step to N+1 per window. `_window_boundaries` now implements `oversample=1.0` by default but produces n_se=947 vs MATLAB's 827. Remaining ~14% gap is from exact MATLAB rounding differences and the depth variable (MATLAB uses `d.izm(1,:)` = shallowest bin depth; Python uses `ens.z` = CTD depth; both change at ~1.09 m/ens so not a major factor).
 
-### Remaining Gap: DL–UL Compass Offset and rotup2down
+### Remaining Gap: DL–UL Compass Offset and rotup2down — superseded (2026-07-05)
 
-The remaining RMSE gap at 1000–4400 m is likely caused by the DL–UL compass misalignment affecting the inversion:
-
-**Observation**: UL heading is consistently ~87° less than DL heading throughout the cast (downcast: 86.2°; upcast: 88.5°). After beam2earth, UL bins produce Earth-frame velocities rotated ~87° from DL's, meaning UL u-observations are approximately measuring v_ocean instead of u_ocean.
-
-**MATLAB's `rotup2down=1`** (default from `default.m`) in `prepinv.m`: computes per-ensemble heading residual `hrotcomp = angle((UL_heading − hoff)/DL_heading)` where `hoff` is the cast-mean DL–UL offset. Rotates DL by −hrotcomp/2 and UL by +hrotcomp/2 to align them. Because `hoff ≈ 87°` removes the constant offset, `hrotcomp` is only the small per-ensemble variation (~±1°), so this correction has negligible effect on a constant-offset instrument pair.
-
-**What Python is missing**: The `_ref_medianan` fix corrects the reference subtraction so DL bins have correct deref. But UL bins (with ~87° heading error) still provide wrong u_ocean observations in the inversion (they see v_ocean). With 24 UL bins vs 5 DL bins (after bin masking), the wrong UL observations dominate the solution at depths covered only by UL.
-
-**Next steps to close the RMSE gap**:
-1. Implement `rotup2down=1`: compute mean DL–UL heading offset, then rotate DL by −hrot/2 and UL by +hrot/2 per ensemble before `prepare_superensembles()`. Pass heading arrays (DL and UL) through `EnsembleData` or apply rotation in the test fixture.
-2. Alternatively: apply a fixed 87° compass correction to UL headings in beam2earth (re-run UL beam2earth with `rdi_ul.heading + 87°`). This would fix the fundamental UL Earth-frame measurement error.
-3. Investigate whether MATLAB's `offsetup2down` (step 12 re-form with first-guess) also contributes.
+**This section is retired.** The "~87° DL–UL compass offset" was not a compass fault;
+it was a Python `beam2earth` transform-convention bug (wrong up/down beam-matrix sign
+for the uplooker), fixed in commit `f3569c4`. Hardcoding a compass-angle correction
+(previously proposed as "Option A") would have been wrong — see `VALIDATION_PLAN.md`
+for the evidence. `rotup2down` ("Option B") was subsequently implemented and measured;
+see "rotup2down: implemented, tested, tried, does not help this cast" above for the
+current status (not committed — it worsens RMSE on this cast). The remaining RMSE gap
+at depth is not yet root-caused; see `VALIDATION_PLAN.md` Phase 2 for the solver-only /
+transform-only harness planned to isolate it.
 
 ---
 
@@ -163,7 +231,7 @@ Tests live in `tests/`. Three levels of confidence:
 
 **Integration tests** (`tests/integration/`) — real instrument files. Gated by `TEST_DATA_DIR` env var.
 - `test_pd0_p16n_cast003.py` — P16N cast 003 file integrity and header checks
-- `test_inverse_p16n_cast003.py` — full pipeline vs LDEO reference (145 tests, 2 `xfail`)
+- `test_inverse_p16n_cast003.py` — full pipeline vs LDEO reference (190 tests total repo-wide with `TEST_DATA_DIR` set, 8 skipped, 2 `xfail` on the RMSE checks)
 
 Run with:
 ```bash

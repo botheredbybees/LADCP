@@ -229,7 +229,7 @@ def test_inverse_depth_range(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=False, reason="RMSE target not yet met; remove once pipeline complete")
+@pytest.mark.xfail(strict=False, reason="u RMSE ~0.068 m/s vs 0.05 target as of 2026-07-05 (convention fix applied; rotup2down tried, worsens RMSE, not applied); see HANDOVER.md")
 def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
     """RMS error in u vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
     ds = netCDF4.Dataset(ref_path)
@@ -252,7 +252,7 @@ def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=False, reason="RMSE target not yet met; remove once pipeline complete")
+@pytest.mark.xfail(strict=False, reason="v RMSE ~0.057 m/s vs 0.05 target as of 2026-07-05 (convention fix applied; rotup2down tried, worsens RMSE, not applied); see HANDOVER.md")
 def test_inverse_v_rmse(inverse_result: InverseResult, ref_path: Path):
     """RMS error in v vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
     ds = netCDF4.Dataset(ref_path)
