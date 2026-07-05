@@ -252,3 +252,64 @@ to isolating the solver specifically.
 Numbers in this report come only from commands actually run this session
 (`octave_harness/diff_ingestion.py`, `octave_harness/diff_stages.py`, the
 ad-hoc M4 triangle script, `pytest`).
+
+## P3 — solver-only comparison (session 2026-07-06)
+
+Script: `octave_harness/solver_only.py` (feeds the step-12 `di` dump into
+`compute_inverse()`; both solvers see identical input, no SADCP).
+
+Sanity block: `n_se=828`, `n_bins=50`, `izd (0-based): 25..49`, `izu: 24..0`,
+`z` range `[-4294.3, -11.1] m` (negative-down, no assertion failure), `izm`
+range `[-4498.5, 194.8] m`, median `dt` 10.9 s, 25 ensembles with finite
+bottom-track velocity. All match the brief's expectations except `dt`:
+the brief estimated "order of 10²-10³ s" but the actual median is 10.9 s
+(one to two orders below) — consistent with 828 super-ensembles over a
+~2.5-hour cast, and since Octave's own `dr` (step14) was computed from
+this same `di.dt`, both solvers see the identical value, so the comparison
+below is unaffected.
+
+| Comparison | u RMSE | v RMSE | n |
+|---|---|---|---|
+| Python (velerr=0.05) vs Octave dr        | 0.0087 | 0.0098 | 520 |
+| Python (velerr=presolve) vs Octave dr    | 0.0082 | 0.0095 | 520 |
+| Python (velerr=0.05) vs archived 003.nc  | 0.0673 | 0.0287 | 520 |
+| Python (velerr=presolve) vs archived 003.nc | 0.0677 | 0.0287 | 520 |
+
+Presolve-informed velerr = 0.0933 (vs Python default 0.05).
+
+**getinv.m's use of the presolve dr:** the incoming presolve `dr` (from
+`step12.mat`, i.e. the lanarrow/shear-based presolve, not the final inverse
+solution) is used in exactly two places in `getinv.m`. (1) Lines 123-130:
+if `dr` exists and `dr.uerr` has any finite values, `ps.velerr` is
+overridden to `medianan(dr.uerr)` (line 126) — this is the only coupling
+this harness's two-config run exercises, and it's what produced the
+0.0933 value above. (2) Lines 236-278, gated by `ps.dragfac>0`: if the ship
+is under way and drag correction is enabled, `ut=interp1(dr.z,dr.u,-di.z)`
+and `vt=interp1(dr.z,dr.v,-di.z)` (lines 240-241) are used to build
+`shipdragvel = shipvel - (ut+i*vt)`, which feeds a wire-drag-corrected CTD
+velocity estimate (`ctdvel`, built through lines 244-278) that is later
+added as an explicit constraint row via `laindrag()` (line 518, weight
+`ps.dragfac`) and also recorded as `uctd_drag`/`vctd_drag` diagnostics
+(lines 574-575). For this cast, `recorded_p_struct_attrs.txt` confirms
+`dragfac = 0` (also set as the `getinv.m:51` default), so pathway (2) was
+**not** exercised in the run these dumps came from — the only real
+presolve-dr coupling active here is the velerr override in (1). This means
+the "identical input" claim in this comparison is not absolute (`ps.velerr`
+is presolve-derived in the Octave run and can be matched or left at
+Python's default), but the coupling actually in effect is small, single-
+valued, and reproduced explicitly by the harness's second config.
+
+**Verdict:** Python-vs-Octave-dr RMSE (0.0082-0.0098 for both velerr
+configs) is roughly an order of magnitude below the full-pipeline Stage D
+gap (u 0.093 / v 0.063) and far below the Python-vs-archive gap (u 0.067-
+0.068 / v 0.029). **Solver exonerated.** Given identical `di` input, the
+Python `compute_inverse()` and Octave `getinv.m` solvers agree closely
+(u/v RMSE ~0.01 m/s); the full-pipeline gap against LDEO's archived answer
+must therefore arise upstream of the solver — in super-ensemble formation
+(`prepinv.m`/`prepare_superensembles`), the rotup2down/offsetup2down
+alignment, or the editing stages — making P1/P2 (Stage A/C alignment and
+the first-diverging stage) the critical path for closing the remaining
+gap. The presolve-informed velerr config is only marginally closer to
+Octave's `dr` (0.0082/0.0095 vs 0.0087/0.0098) and essentially identical
+against the archive (0.0677/0.0287 vs 0.0673/0.0287) — consistent with
+`dragfac=0` meaning the presolve `dr` coupling exercised here is weak.
