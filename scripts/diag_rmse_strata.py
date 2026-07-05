@@ -31,7 +31,9 @@ from ladcp.qa.editing import (  # noqa: E402
 from ladcp.solution.inverse import (  # noqa: E402
     EnsembleData,
     compute_inverse,
+    offsetup2down,
     prepare_superensembles,
+    rotup2down,
 )
 from ladcp.transforms.beam2earth import beam2earth, uvrot  # noqa: E402
 
@@ -40,7 +42,7 @@ DROT_DEG = 12.318441
 STRATA = [(0, 1000), (1000, 2000), (2000, 3000), (3000, 4500)]
 
 
-def run_pipeline(data_dir: Path, legacy: bool):
+def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool = False):
     rdi = load_rdi(data_dir / "003DL000.000")
     rdi_ul = load_rdi(data_dir / "003UL000.000")
     ctd = load_ctd(data_dir / "003_01.cnv")
@@ -112,14 +114,31 @@ def run_pipeline(data_dir: Path, legacy: bool):
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
     ens = edit_large_velocities(ens)
     ens = edit_w_outliers(ens)
-    se = prepare_superensembles(ens)
-    res = compute_inverse(
-        se, u_ship=u_ship, v_ship=v_ship,
-        sadcp_z=npz["z"] if npz is not None else None,
-        sadcp_u=npz["u"] if npz is not None else None,
-        sadcp_v=npz["v"] if npz is not None else None,
-        sadcp_err=npz["err"] if npz is not None else None,
-    )
+    if rot or offset:
+        # offsetup2down (process_cast.m step 12) is always paired with
+        # rotup2down (step 10) in LDEO's default pipeline.
+        ens, _ = rotup2down(ens, rdi.heading, rdi_ul.heading[ul_idx])
+
+    def _solve(ens: EnsembleData):
+        se = prepare_superensembles(ens)
+        return compute_inverse(
+            se, u_ship=u_ship, v_ship=v_ship,
+            sadcp_z=npz["z"] if npz is not None else None,
+            sadcp_u=npz["u"] if npz is not None else None,
+            sadcp_v=npz["v"] if npz is not None else None,
+            sadcp_err=npz["err"] if npz is not None else None,
+        )
+
+    if offset:
+        # process_cast.m steps 10-12: a first solve (rotup2down only) supplies
+        # the first-guess profile `dr` that offsetup2down needs, then the
+        # ensembles are re-formed with the offset correction applied and
+        # solved again. We skip LDEO's step-11 outlier-trimming (lanarrow) —
+        # a documented simplification, not a silent shortcut.
+        first_guess = _solve(ens)
+        ens, _ = offsetup2down(ens, first_guess.z, first_guess.u, first_guess.v)
+
+    res = _solve(ens)
     return res, (ref_z, ref_u, ref_v, ref_nvel)
 
 
@@ -147,9 +166,14 @@ def stats(res, ref):
 
 def main():
     data_dir = Path(os.environ.get("TEST_DATA_DIR", "test_data")) / "2015_P16N"
-    for legacy in (True, False):
-        tag = "LEGACY (pre-fix)" if legacy else "NEW (loadrdi convention)"
-        res, ref = run_pipeline(data_dir, legacy)
+    configs = [
+        ("LEGACY (pre-fix)", True, False, False),
+        ("NEW (loadrdi convention)", False, False, False),
+        ("NEW + rotup2down only", False, True, False),
+        ("NEW + rotup2down + offsetup2down (iterative)", False, True, True),
+    ]
+    for tag, legacy, rot, offset in configs:
+        res, ref = run_pipeline(data_dir, legacy, rot, offset)
         print(f"\n=== {tag} ===")
         hdr = f"  {'stratum':>12s} {'n':>4s} {'u RMSE':>8s} {'v RMSE':>8s} {'r(u)':>6s}"
         print(hdr)

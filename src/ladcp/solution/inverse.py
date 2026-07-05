@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 import scipy.linalg
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from scipy.sparse import csr_matrix
 
 
@@ -57,6 +57,217 @@ class SuperEnsemble:
     slon: np.ndarray      # (n_se,) longitude
     izd: np.ndarray       # downlooker bin row indices (unchanged from input)
     izu: np.ndarray       # uplooker bin row indices (unchanged from input)
+
+
+def _compoff(u1: np.ndarray, u2: np.ndarray) -> float:
+    """Mean compass offset between two unit-complex heading series.
+
+    Faithful port of prepinv.m::compoff (lines 717-745).  Headings of series 1
+    are binned into 36 ten-degree sectors; the unit vectors of both series are
+    averaged per sector (only sectors with >1 sample count), and the offset is
+    the angle of the least-squares complex ratio u1a/u2a
+    (= angle(sum(u1a .* conj(u2a)))).  Returns degrees.
+    """
+    h1 = -np.degrees(np.angle(u1))
+    h1 = np.where(h1 < 0, h1 + 360.0, h1)
+    nhead = 36
+    dhead = 360.0 / 2.0 / nhead  # 5-degree half-width
+    h0 = np.linspace(5.0, 355.0, nhead)
+    u1a = np.full(nhead, np.nan, dtype=complex)
+    u2a = np.full(nhead, np.nan, dtype=complex)
+    for i in range(nhead):
+        ii = np.abs(h1 - h0[i]) <= dhead
+        if ii.sum() > 1:
+            u1a[i] = np.mean(u1[ii])
+            u2a[i] = np.mean(u2[ii])
+    ok = np.isfinite(u1a) & np.isfinite(u2a)
+    if ok.sum() > 0:
+        # MATLAB row-vector right division a/b = sum(a.*conj(b))/sum(|b|^2);
+        # only the angle is used.
+        return float(np.degrees(np.angle(np.sum(u1a[ok] * np.conj(u2a[ok])))))
+    return 0.0
+
+
+def rotup2down(
+    ens: EnsembleData,
+    hdg_dl_deg: np.ndarray,
+    hdg_ul_deg: np.ndarray,
+) -> tuple[EnsembleData, np.ndarray]:
+    """Harmonize per-ensemble UL/DL heading fluctuations (prepinv.m rotup2down=1).
+
+    Faithful port of prepinv.m lines 294-418, mode p.rotup2down==1 (the
+    default, "use mean up/down compass"):
+
+    1. ``hoff = compoff(exp(-i*hdg_dl), exp(-i*hdg_ul))`` — the cast-mean
+       DL-UL compass offset (e.g. the ~90 deg physical mounting-azimuth
+       difference on P16N cast 003).  The mean offset needs NO correction
+       when each instrument's beam2earth used its own compass.
+    2. ``hrot = angle(exp(-i*(hdg_ul - hoff)) / exp(-i*hdg_dl))`` — the
+       per-ensemble RESIDUAL heading disagreement (mean ~0), i.e. only the
+       fluctuation.
+    3. Rotate DL bins and bottom track by half the residual one way and UL
+       bins half the other way, meeting in the middle.  MATLAB's uvrot
+       rotates CLOCKWISE by its angle argument (it negates internally), so
+       MATLAB ``uvrot(u, v, -hrot/2)`` equals Python ``uvrot(u, v, +hrot/2)``.
+
+    Parameters
+    ----------
+    ens : EnsembleData
+        Combined-instrument ensemble data (Earth frame).
+    hdg_dl_deg, hdg_ul_deg : ndarray, shape (n_ens,)
+        Raw per-ensemble headings, UL already time-aligned to DL ensembles.
+
+    Returns
+    -------
+    (EnsembleData, ndarray)
+        New EnsembleData with rotated u/v/bvel, and hrot (degrees, per
+        ensemble) for diagnostics (MATLAB stores it as d.hrot).
+    """
+    from ladcp.transforms.beam2earth import uvrot
+
+    u1d = np.exp(-1j * np.radians(hdg_dl_deg))
+    u1u = np.exp(-1j * np.radians(hdg_ul_deg))
+    hoff = _compoff(u1d, u1u)
+    u1uc = np.exp(-1j * np.radians(hdg_ul_deg - hoff))
+    hrot = np.degrees(np.angle(u1uc / u1d))  # per-ensemble residual, mean ~0
+
+    u = ens.u.copy()
+    v = ens.v.copy()
+    bvel = ens.bvel.copy()
+
+    # DL bins: MATLAB uvrot(ru, rv, -hrotm/2) -> Python uvrot(+hrot/2).
+    # Non-finite rotation angles are replaced by the mean (prepinv l. 380-383).
+    hrot_d = np.where(np.isfinite(hrot), hrot, np.nanmean(hrot))
+    u[ens.izd, :], v[ens.izd, :] = uvrot(u[ens.izd, :], v[ens.izd, :], hrot_d / 2.0)
+    # Bottom track rotates with the DL (prepinv l. 396: raw hrot, no NaN guard).
+    bvel[:, 0], bvel[:, 1] = uvrot(bvel[:, 0], bvel[:, 1], hrot / 2.0)
+
+    # UL bins: MATLAB uvrot(ru, rv, +hrotm/2) -> Python uvrot(-hrot/2).
+    hrot_u = np.where(np.isfinite(hrot), hrot, np.nanmean(hrot))
+    u[ens.izu, :], v[ens.izu, :] = uvrot(u[ens.izu, :], v[ens.izu, :], -hrot_u / 2.0)
+
+    return replace(ens, u=u, v=v, bvel=bvel), hrot
+
+
+def _medianan_na(x: np.ndarray, na: int) -> np.ndarray:
+    """Faithful port of medianan.m (docs/legacy/medianan.m) for real or complex x.
+
+    Column-wise: sort finite values, average the ``2*na+1`` central sorted
+    values (indices ``round([-na:na] + n/2)``, 1-based, clipped to the valid
+    range). ``na=0`` reduces to a single middle value (see ``_ref_medianan``,
+    which predates this and is kept separate since it's proven against a
+    different reference behaviour). MATLAB sorts complex values by magnitude,
+    with angle as tiebreak — replicated via lexsort.
+    """
+    n_rows, n_cols = x.shape
+    y = np.full(n_cols, np.nan, dtype=x.dtype)
+    offsets = np.arange(-na, na + 1)
+    for j in range(n_cols):
+        col = x[:, j]
+        valid = col[np.isfinite(col)]
+        n = len(valid)
+        if n == 0:
+            continue
+        if np.iscomplexobj(valid):
+            order = np.lexsort((np.angle(valid), np.abs(valid)))
+        else:
+            order = np.argsort(valid)
+        valid = valid[order]
+        # MATLAB round() is half-away-from-zero; np.round is half-to-even and
+        # silently duplicates/drops indices on odd n (see the regression test).
+        raw = offsets + n / 2.0
+        indexav = (np.sign(raw) * np.floor(np.abs(raw) + 0.5)).astype(int)  # 1-based
+        indexav = indexav[(indexav > 0) & (indexav <= n)]
+        if len(indexav) == 0:
+            continue
+        y[j] = np.mean(valid[indexav - 1])
+    return y
+
+
+def offsetup2down(
+    ens: EnsembleData,
+    dr_z: np.ndarray,
+    dr_u: np.ndarray,
+    dr_v: np.ndarray,
+    *,
+    factor: float = 1.0,
+) -> tuple[EnsembleData, np.ndarray]:
+    """Harmonize the UL/DL velocity offset against a first-guess profile.
+
+    Faithful port of prepinv.m lines 177-215, mode p.offsetup2down!=0 (default
+    1). Distinct from ``rotup2down``: that corrects a per-ensemble HEADING
+    fluctuation; this corrects a per-ensemble VELOCITY offset between UL and
+    DL, using a preliminary ocean-velocity profile (``dr``, e.g. from a first
+    solver pass) as the reference each instrument is compared against.
+
+    1. Interpolate ``dr_u``/``dr_v`` (vs. positive depth ``dr_z``) onto every
+       bin's depth (``-ens.izm``); NaN outside ``dr_z``'s range (no
+       extrapolation, matching MATLAB's ``interp1q``).
+    2. Per ensemble, take the residual (raw - first-guess) complex velocity,
+       separately for UL bins (``uu``) and DL bins (``ud``), via
+       ``medianan(..., na=2)`` (prepinv.m's literal constant).
+    3. ``uoff = (ud - uu) * factor`` — ensembles where either residual is
+       non-finite get ``uoff = 0`` (prepinv.m l. 205-207: no correction
+       applied when either instrument's median is undefined for that
+       ensemble).
+    4. Shift UL bins by ``+uoff/2`` and DL bins (and bottom track) by
+       ``-uoff/2`` — the two instruments meet in the middle, exactly as
+       ``rotup2down`` does for heading.
+
+    Parameters
+    ----------
+    ens : EnsembleData
+        Combined-instrument ensemble data (Earth frame), ideally already
+        passed through ``rotup2down``.
+    dr_z : ndarray
+        First-guess profile depth, positive, increasing downward (e.g.
+        ``InverseResult.z``).
+    dr_u, dr_v : ndarray
+        First-guess profile eastward/northward velocity at ``dr_z``.
+    factor : float
+        Scale of the correction (prepinv.m's ``p.offsetup2down``; 0 disables
+        it entirely).
+
+    Returns
+    -------
+    (EnsembleData, ndarray)
+        New EnsembleData with shifted u/v/bvel, and uoff (complex, per
+        ensemble) for diagnostics.
+    """
+    z_bin = -ens.izm  # positive depth, (n_bins, n_ens)
+    l_ru = np.interp(z_bin, dr_z, dr_u, left=np.nan, right=np.nan)
+    l_rv = np.interp(z_bin, dr_z, dr_v, left=np.nan, right=np.nan)
+    # np.interp ignores NaN sentinels for non-monotonic checks but respects them
+    # via left/right; explicitly re-mask points outside [min(dr_z), max(dr_z)]
+    # to match MATLAB interp1q (np.interp only guards the two edges, not gaps).
+    out_of_range = (z_bin < dr_z.min()) | (z_bin > dr_z.max())
+    l_ru = np.where(out_of_range, np.nan, l_ru)
+    l_rv = np.where(out_of_range, np.nan, l_rv)
+
+    weight_mask = np.where(np.isnan(ens.weight), np.nan, 0.0)
+    resid = (ens.u - l_ru) + 1j * (ens.v - l_rv) + weight_mask
+
+    uu = _medianan_na(resid[ens.izu, :], na=2)
+    ud = _medianan_na(resid[ens.izd, :], na=2)
+
+    bad = ~np.isfinite(uu + ud)
+    uu = np.where(bad, 0.0, uu)
+    ud = np.where(bad, 0.0, ud)
+
+    uoff = (ud - uu) * factor  # (n_ens,) complex
+
+    u = ens.u.copy()
+    v = ens.v.copy()
+    bvel = ens.bvel.copy()
+
+    u[ens.izu, :] += np.real(uoff / 2.0)[np.newaxis, :]
+    v[ens.izu, :] += np.imag(uoff / 2.0)[np.newaxis, :]
+    u[ens.izd, :] += np.real(-uoff / 2.0)[np.newaxis, :]
+    v[ens.izd, :] += np.imag(-uoff / 2.0)[np.newaxis, :]
+    bvel[:, 0] += np.real(-uoff / 2.0)
+    bvel[:, 1] += np.imag(-uoff / 2.0)
+
+    return replace(ens, u=u, v=v, bvel=bvel), uoff
 
 
 def _ref_medianan(x: np.ndarray) -> np.ndarray:

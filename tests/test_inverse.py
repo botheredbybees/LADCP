@@ -16,6 +16,9 @@ from ladcp.solution.inverse import (
     InverseParams,
     InverseResult,
     compute_inverse,
+    rotup2down,
+    offsetup2down,
+    _medianan_na,
 )
 import scipy.sparse
 
@@ -427,3 +430,145 @@ def test_add_sadcp_zeros_in_A_ctd():
         sadcp_err=np.array([0.02]), dz=10.0, sadcpfac=1.0, velerr=0.05,
     )
     assert A_c2[-1].sum() == 0.0  # last row of A_ctd = zeros
+
+
+def _make_dual_ens(n_ul: int = 3, n_dl: int = 3, n_ens: int = 40) -> EnsembleData:
+    """Synthetic dual-instrument EnsembleData with unit eastward flow."""
+    n_bins = n_ul + n_dl
+    z = np.linspace(-20.0, -220.0, n_ens)
+    izm = np.tile(z, (n_bins, 1))
+    return EnsembleData(
+        u=np.ones((n_bins, n_ens)),
+        v=np.zeros((n_bins, n_ens)),
+        w=np.zeros((n_bins, n_ens)),
+        weight=np.ones((n_bins, n_ens)),
+        izm=izm,
+        z=z,
+        time_jul=np.linspace(2457000.0, 2457001.0, n_ens),
+        bvel=np.full((n_ens, 3), np.nan),
+        bvels=np.full((n_ens, 3), np.nan),
+        hbot=np.full(n_ens, np.nan),
+        izd=np.arange(n_ul, n_bins),
+        izu=np.arange(n_ul),
+        slat=np.full(n_ens, np.nan),
+        slon=np.full(n_ens, np.nan),
+    )
+
+
+def test_rotup2down_constant_offset_is_noop():
+    """A constant DL-UL compass offset is absorbed into hoff: hrot ~ 0."""
+    ens = _make_dual_ens()
+    n_ens = ens.z.size
+    hdg_dl = np.full(n_ens, 100.0)
+    hdg_ul = np.full(n_ens, 10.0)  # constant 90-deg mounting offset
+    out, hrot = rotup2down(ens, hdg_dl, hdg_ul)
+    np.testing.assert_allclose(hrot, 0.0, atol=1e-10)
+    np.testing.assert_allclose(out.u, ens.u, atol=1e-12)
+    np.testing.assert_allclose(out.v, ens.v, atol=1e-12)
+
+
+def test_rotup2down_splits_fluctuation():
+    """UL heading fluctuation +/-4 deg: DL and UL counter-rotate by 2 deg.
+
+    If the UL compass reads 4 deg high, its Earth vector is 4 deg clockwise
+    of the DL's; the correction rotates UL 2 deg CCW and DL 2 deg CW.
+    """
+    ens = _make_dual_ens()
+    n_ens = ens.z.size
+    d = np.where(np.arange(n_ens) % 2 == 0, 4.0, -4.0)  # zero-mean fluctuation
+    hdg_dl = np.full(n_ens, 100.0)
+    hdg_ul = 10.0 + d
+    out, hrot = rotup2down(ens, hdg_dl, hdg_ul)
+    np.testing.assert_allclose(hrot, -d, atol=1e-8)
+    c2, s2 = np.cos(np.radians(2.0)), np.sin(np.radians(2.0))
+    k = 0  # ensemble with d=+4 (hrot=-4): DL rotated 2 deg CW, UL 2 deg CCW
+    assert abs(out.u[ens.izd[0], k] - c2) < 1e-8
+    assert abs(out.v[ens.izd[0], k] - (-s2)) < 1e-8
+    assert abs(out.u[ens.izu[0], k] - c2) < 1e-8
+    assert abs(out.v[ens.izu[0], k] - (+s2)) < 1e-8
+
+
+def test_rotup2down_returns_new_ensemble():
+    """Input EnsembleData must not be mutated."""
+    ens = _make_dual_ens()
+    n_ens = ens.z.size
+    u_before = ens.u.copy()
+    hdg_dl = np.full(n_ens, 100.0)
+    hdg_ul = 10.0 + np.where(np.arange(n_ens) % 2 == 0, 4.0, -4.0)
+    out, _ = rotup2down(ens, hdg_dl, hdg_ul)
+    np.testing.assert_array_equal(ens.u, u_before)
+    assert out is not ens
+
+
+def _make_biased_dual_ens(
+    bias: float, n_ul: int = 3, n_dl: int = 3, n_ens: int = 10,
+) -> EnsembleData:
+    """Dual-instrument EnsembleData: UL reads 2*bias high in u, DL matches truth."""
+    ens = _make_dual_ens(n_ul=n_ul, n_dl=n_dl, n_ens=n_ens)
+    ens.izm[:, :] = -100.0  # constant positive depth 100 m for every bin/ensemble
+    ens.u[ens.izu, :] = 1.0 + 2.0 * bias
+    ens.u[ens.izd, :] = 1.0
+    ens.bvel[:, 0] = 0.2  # arbitrary finite bottom-track u, to check it also shifts
+    ens.bvel[:, 1] = 0.0
+    ens.bvel[:, 2] = 0.0
+    return ens
+
+
+def test_medianan_na_matches_matlab_round_half_away_from_zero():
+    """medianan.m's `round([-na:na]+n/2)` uses half-away-from-zero rounding.
+
+    n=21, na=2 gives x/2=10.5 -> offsets [8.5,9.5,10.5,11.5,12.5] -> MATLAB
+    round() (half away from zero) picks 1-based [9,10,11,12,13]. numpy's
+    default round-half-to-even would instead pick [8,10,10,12,12] --
+    duplicating two indices and dropping one. Distinct, non-uniform values
+    are required to expose this (a uniform column can't distinguish which
+    indices were averaged).
+    """
+    n = 21
+    col = np.arange(n, dtype=float)[:, np.newaxis]  # column 0..20, already sorted
+    y = _medianan_na(col, na=2)
+    # MATLAB 1-based [9,10,11,12,13] -> 0-based [8,9,10,11,12] -> mean = 10.0
+    assert abs(y[0] - 10.0) < 1e-10
+
+
+def test_offsetup2down_splits_residual_toward_consensus():
+    """UL reads 2*bias high vs a first guess matching DL (u=1): both converge to 1+bias.
+
+    prepinv.m's offsetup2down shifts UL/DL by half the UL-DL residual, in
+    opposite directions, so neither instrument is treated as "more correct".
+    """
+    bias = 0.6
+    ens = _make_biased_dual_ens(bias)
+    dr_z = np.array([0.0, 200.0])
+    dr_u = np.array([1.0, 1.0])
+    dr_v = np.array([0.0, 0.0])
+    out, uoff = offsetup2down(ens, dr_z, dr_u, dr_v)
+    np.testing.assert_allclose(out.u[ens.izu, :], 1.0 + bias, atol=1e-10)
+    np.testing.assert_allclose(out.u[ens.izd, :], 1.0 + bias, atol=1e-10)
+    np.testing.assert_allclose(out.v, 0.0, atol=1e-10)
+    # Bottom track shifts with the DL correction (-uoff/2), matching rotup2down.
+    np.testing.assert_allclose(out.bvel[:, 0], 0.2 + bias, atol=1e-10)
+
+
+def test_offsetup2down_zero_factor_is_noop():
+    """factor=0 disables the correction entirely (matches p.offsetup2down=0)."""
+    ens = _make_biased_dual_ens(bias=0.6)
+    dr_z = np.array([0.0, 200.0])
+    dr_u = np.array([1.0, 1.0])
+    dr_v = np.array([0.0, 0.0])
+    out, uoff = offsetup2down(ens, dr_z, dr_u, dr_v, factor=0.0)
+    np.testing.assert_allclose(out.u, ens.u, atol=1e-12)
+    np.testing.assert_allclose(out.v, ens.v, atol=1e-12)
+    np.testing.assert_allclose(out.bvel, ens.bvel, atol=1e-12, equal_nan=True)
+
+
+def test_offsetup2down_returns_new_ensemble():
+    """Input EnsembleData must not be mutated."""
+    ens = _make_biased_dual_ens(bias=0.6)
+    u_before = ens.u.copy()
+    dr_z = np.array([0.0, 200.0])
+    dr_u = np.array([1.0, 1.0])
+    dr_v = np.array([0.0, 0.0])
+    out, _ = offsetup2down(ens, dr_z, dr_u, dr_v)
+    np.testing.assert_array_equal(ens.u, u_before)
+    assert out is not ens

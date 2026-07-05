@@ -8,7 +8,15 @@ inventory). Supersedes the "Remaining Work" section of `HANDOVER.md` (2026-06-27
 tested, and correctly ported (see "Phase 1 result" below) — but it was tested in
 isolation and made RMSE worse. Two follow-up findings from re-reading the LDEO logs and
 `prepinv.m`/`process_cast.m` change what Phase 2 should actually do; see "Phase 1.5" and
-the corrected Phase 2 §1 below. **Read those before starting Phase 2 work.**
+the corrected Phase 2 §1 below.
+
+**Update 2026-07-05 (same session, later still):** Phase 2 §1a (`offsetup2down`) is
+now also done, tested, and measured — see "Phase 2 result" below. Short version: the
+pairing hypothesis is directionally right (offsetup2down claws back roughly half of
+rotup2down's damage) but the combined loop still underperforms doing neither
+correction. Neither is wired into the production pipeline. **Read "Phase 1.5" and
+"Phase 2 result" before doing further work here** — the "remaining suspects" list at
+the end of "Phase 2 result" is the actual next-step menu.
 
 ## Phase 1 result (2026-07-05): rotup2down alone does not close the gap — as expected
 
@@ -76,6 +84,56 @@ type between "prep" and "solve" in our own pipeline. LDEO's log references a MAT
 retrievable without going back to Thurnherr/LDEO or re-running their MATLAB stack.
 **"Feed LDEO's own inputs directly into `prepare_superensembles()`/`compute_inverse()`"
 (Phase 2 §1, original wording) cannot be done with data currently on disk.**
+
+## Phase 2 result (2026-07-05, same session): offsetup2down ported, paired, still doesn't close the gap
+
+`offsetup2down()` was implemented per the corrected Phase 2 §1a brief (faithful port of
+`prepinv.m:177-215`, TDD, 4 unit tests — see `PROGRAMMERS_NOTES.md`'s matching section for
+the full technical writeup) and wired into `scripts/diag_rmse_strata.py` as a 4th
+config: a first solve (rotup2down only) supplies the first-guess profile, then
+`offsetup2down` is applied and the ensembles re-solved (LDEO's step-11 outlier-trimming
+`lanarrow` is skipped — documented simplification).
+
+| config | TOTAL u RMSE | 0–1000m u RMSE |
+|---|---|---|
+| convention fix only (baseline, no correction) | 0.0678 | 0.0142 |
+| + rotup2down only | 0.0755 | 0.0327 |
+| + rotup2down + offsetup2down (iterative) | 0.0868 | 0.0207 |
+
+*(Numbers above are post a rounding-bug fix caught in advisor review before commit:
+`_medianan_na`'s `round([-na:na]+n/2)` must be MATLAB-style half-away-from-zero, not
+numpy's half-to-even — see `PROGRAMMERS_NOTES.md` for the full note. The fix moved
+TOTAL u RMSE by 0.0003 and left 0-1000m unchanged — verified non-material to the
+conclusion below, not just assumed so.)*
+
+**The pairing hypothesis is directionally confirmed but doesn't resolve the gap.**
+Adding `offsetup2down` claws back roughly half of `rotup2down`-alone's 0–1000 m damage
+(0.0327 → 0.0207), consistent with "testing rotup2down alone was testing half of a
+paired correction." But the full, correctly-paired loop is still worse everywhere than
+applying **neither** correction (baseline 0.0142 / 0.0678). Faithfully porting both
+corrections does not, by itself, close the gap — it only narrows why Phase 1's
+regression happened without resolving the underlying disagreement with LDEO.
+
+**Decision: neither `rotup2down` nor `offsetup2down` is wired into the production
+pipeline** (`tests/integration/test_inverse_p16n_cast003.py`'s fixture still uses
+convention-fix-only). Both are committed as tested, available library functions —
+recovering `rotup2down` from stash cost real effort once; it stays in the tree even
+unused. The xfail RMSE tests remain pointed at the baseline numbers above.
+
+**Remaining suspects, not yet tested, in priority order:**
+1. The first-guess simplification (a first solve without LDEO's `lanarrow` outlier
+   trim) may feed `offsetup2down` a meaningfully worse reference than LDEO's own —
+   try iterating this loop 2-3 times (prepinv.m's `dr` itself presumably improves
+   cast the more the loop runs, though process_cast.m only shows one re-form pass)
+   or approximating outlier trimming before concluding this isn't it.
+2. A residual defect in the UL/DL transform (upstream of both corrections) that
+   these ensemble-level corrections amplify rather than fix — worth re-running the
+   E1 diagnostic (`scripts/diag_ul_dl_rotation.py`) with rotup2down+offsetup2down
+   applied, to see if the residual UL→DL rotation angle is still ~noise or has
+   become coherent.
+3. Get a second raw+reference cast (Phase 3 §2, S4P raw PD0) to check whether this
+   pattern (pairing helps directionally but doesn't close the gap) replicates, or
+   is P16N-cast-003-specific.
 
 ## The reframe: the "87° compass offset" is probably not a compass problem
 
@@ -211,6 +269,7 @@ inherits the doubt.
 | "rotup2down is the missing step for the constant offset" | **Retired as stated** — it handles fluctuations only; still worth porting after the transform fix |
 | "rotup2down alone should close (part of) the RMSE gap" | **Retired 2026-07-05** — LDEO always pairs it with `offsetup2down` inside an iterative first-guess loop (`default.m` sets both to 1); tested alone, out of that context, it made RMSE worse. Not a rotup2down bug — port `offsetup2down` + the loop before re-testing |
 | "S4P/P16N `.nc`/`.mat` files can drive a solver-only harness directly" | **Retired 2026-07-05** — confirmed via `scipy.io.loadmat` that they hold only final per-depth profiles and final per-super-ensemble nav/CTD series, no bin×ensemble matrix; LDEO's own intermediate checkpoint isn't archived here |
+| "porting offsetup2down + the iterative loop closes the RMSE gap" | **Retired 2026-07-05** — implemented, tested, measured: it claws back ~half of rotup2down-alone's 0–1000m damage (pairing hypothesis confirmed directionally) but the combined loop still underperforms applying neither correction. Neither wired into production; see "Phase 2 result" for the remaining-suspects list |
 | "negate UL pitch is the complete inverted-instrument treatment" | **Under test (E1/C1)** — prime suspect |
 | "validate end-to-end RMSE<0.05 on one cast" | **Retired** — stage-wise harness + stratified, uncertainty-aware criteria |
 | "P16N cast 003 is the only raw+reference pair available" | **Retired** — S4P raw is retrievable; Nuyina cast already local |

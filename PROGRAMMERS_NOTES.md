@@ -160,11 +160,77 @@ most plausibly per-instrument compass jitter rather than a genuine mechanical
 flex between the two frames — "correcting" for it injects that jitter into u/v
 instead of removing a real signal.
 
-**Decision: not committed.** The implementation is stashed (`git stash list`, not in
-the working tree) rather than discarded, in case a future cast or instrument pair
-(e.g. Nuyina's own rosette, with different mounting rigidity) shows a real
-per-ensemble heading disagreement worth correcting. Do not re-apply it here without
-new evidence the residual is signal, not noise.
+**Decision (superseded below): not committed.** The implementation was left in
+`git stash` rather than discarded, in case a future cast or instrument pair (e.g.
+Nuyina's own rosette, with different mounting rigidity) shows a real per-ensemble
+heading disagreement worth correcting.
+
+### offsetup2down: implemented, tested, paired with rotup2down, still doesn't close the gap (2026-07-05, later)
+
+Re-reading the LDEO processing log (`LOG_Inverse_log`, embedded in every reference
+`.nc`) and `process_cast.m` showed `rotup2down` was tested in isolation, but LDEO
+never applies it alone: `docs/legacy/default.m:223` sets `offsetup2down=1` alongside
+`rotup2down=1` as the standard defaults for every cast, and both are applied inside
+an iterative loop (`process_cast.m` steps 10–12: form super-ensembles with
+`rotup2down` only → preliminary solve → **re-form** with `offsetup2down` (a velocity
+offset between UL/DL, distinct from `rotup2down`'s heading rotation) using that first
+guess → final solve). Full evidence trail in `VALIDATION_PLAN.md`'s "Phase 1.5"
+section.
+
+`offsetup2down()` in `src/ladcp/solution/inverse.py` is a faithful port of
+`prepinv.m` lines 177–215: interpolates a first-guess profile onto each bin's depth,
+takes the per-ensemble median (MATLAB's literal `medianan(x, 2)`, generalized here as
+`_medianan_na`, complex-magnitude-sorted to match MATLAB's complex `sort`) residual
+velocity separately for UL and DL bins, and shifts each half the UL−DL difference in
+opposite directions — the same "meet in the middle" pattern as `rotup2down`. Four
+unit tests (consensus-convergence, zero-factor no-op, bottom-track shift,
+non-mutation) in `tests/test_inverse.py`.
+
+Wired into `scripts/diag_rmse_strata.py` as a 4th config: first solve with
+`rotup2down` only supplies the first-guess profile, then `offsetup2down` is applied
+and the ensembles re-solved (LDEO's step-11 outlier-trimming `lanarrow` is skipped —
+a first solve without it is a reasonable, documented simplification, not a silent
+shortcut).
+
+| config | TOTAL u RMSE | TOTAL v RMSE | r(u) | 0–1000m u RMSE |
+|---|---|---|---|---|
+| convention fix only (baseline) | 0.0678 | 0.0573 | +0.483 | 0.0142 |
+| + rotup2down only | 0.0755 | 0.0552 | +0.381 | 0.0327 |
+| + rotup2down + offsetup2down (iterative) | 0.0868 | 0.0576 | +0.318 | 0.0207 |
+
+Pairing `offsetup2down` with `rotup2down` **partially recovers** the 0–1000 m
+damage rotup2down-alone caused (0.0327 → 0.0207) — consistent with the pairing
+hypothesis — but the combined loop is still worse everywhere than applying neither
+correction (0.0142 at 0–1000 m, 0.0678 TOTAL). Implementing both corrections
+faithfully does not close the gap; it only confirms the pairing matters without
+resolving why the pair still underperforms doing nothing. Remaining suspects (not
+yet tested): the first-guess simplification (skipping `lanarrow`'s outlier trim may
+feed a first guess to `offsetup2down` that's meaningfully worse than LDEO's own),
+or a residual defect elsewhere in the UL/DL transform that these ensemble-level
+corrections amplify rather than fix.
+
+**Decision: neither is wired into the production pipeline.** Both `rotup2down` and
+`offsetup2down` are committed as tested, available library functions (not stashed —
+recovering them cost real effort once; keep them in the codebase) but are NOT
+called from `tests/integration/test_inverse_p16n_cast003.py`'s fixture. The
+production RMSE numbers remain the "convention fix only" baseline above. Do not
+re-apply either without new evidence that changes this picture.
+
+**Rounding bug caught before commit (advisor review):** `_medianan_na`'s first draft
+used `np.round(offsets + n/2.0)`, which is round-half-**to-even**; `medianan.m`'s
+MATLAB `round()` is half-**away-from-zero** — these disagree on every odd-`n`
+column (e.g. n=21, na=2: MATLAB picks indices `[9,10,11,12,13]`, `np.round` picks
+`[8,10,10,12,12]` — duplicating two indices, dropping one). The three original unit
+tests used uniform bin values, so they couldn't detect this (a uniform column's mean
+is the same regardless of which indices are averaged). Added a regression test with
+distinct, sorted values (`test_medianan_na_matches_matlab_round_half_away_from_zero`)
+and fixed the rounding to `sign(x) * floor(abs(x) + 0.5)`. **Verified non-material to
+the conclusion above**: re-running `diag_rmse_strata.py` after the fix moved TOTAL
+u RMSE from 0.0865→0.0868 and 0-1000m from 0.0207→0.0207 (numbers in the table above
+are post-fix) — the "still underperforms doing nothing" conclusion holds. This is a
+reminder that uniform/degenerate synthetic test fixtures can pass while blind to
+real bugs; prefer distinct values when a test's whole point is checking *which*
+elements got selected, not just their aggregate.
 
 ### Root Cause: Reference Subtraction Median vs MATLAB medianan (2026-06-27)
 
