@@ -4,6 +4,79 @@
 PROGRAMMERS_NOTES.md, the LDEO cast-003 processing log, prepinv.m, and the test-data
 inventory). Supersedes the "Remaining Work" section of `HANDOVER.md` (2026-06-27).
 
+**Update 2026-07-05 (later same day):** Phase 1's `rotup2down` implementation is done,
+tested, and correctly ported (see "Phase 1 result" below) — but it was tested in
+isolation and made RMSE worse. Two follow-up findings from re-reading the LDEO logs and
+`prepinv.m`/`process_cast.m` change what Phase 2 should actually do; see "Phase 1.5" and
+the corrected Phase 2 §1 below. **Read those before starting Phase 2 work.**
+
+## Phase 1 result (2026-07-05): rotup2down alone does not close the gap — as expected
+
+`rotup2down` (prepinv.m's per-ensemble DL/UL heading-fluctuation harmonization) was
+implemented as a faithful port (`_compoff` + `rotup2down` in `src/ladcp/solution/inverse.py`,
+unit-tested), verified against P16N cast 003, and found to worsen u RMSE almost everywhere
+(0–1000 m RMSE more than doubled, 0.0142→0.0327). A sign-bug was ruled out by swapping the
+DL/UL rotation directions (0.0754 vs 0.0755 — nearly identical). **Not committed**; the
+implementation is preserved in `git stash` (`stash@{0}`, "WIP on main: a56ec48 ...") rather
+than deleted, recoverable via `git stash list` / `git stash show -p stash@{0}`.
+
+This result is *expected* given Phase 1.5 below — do not read it as "rotup2down is broken."
+It was tested as a standalone one-shot correction on raw data, which is not how LDEO
+actually invokes it (see next section). The `_compoff` offset computation itself is
+independently verified correct: run without proper UL-index time-alignment it still gives
+hoff = −90.84° for P16N cast 003 vs LDEO's own logged −89.978° — well within expected
+tolerance for the alignment shortcut used in the check.
+
+## Phase 1.5 — Why rotup2down alone can't reproduce LDEO output (new, 2026-07-05)
+
+Two things confirmed by reading the LDEO processing logs (embedded as the
+`LOG_Inverse_log` global attribute in every reference `.nc`) and the legacy MATLAB source,
+that were not visible from `prepinv.m` alone:
+
+**1. LDEO applies TWO up/down harmonization corrections by default, not one.**
+`docs/legacy/default.m:223` sets `p.offsetup2down = 1` (alongside `p.rotup2down = 1`,
+line ~219) — both defaults, used on every cast unless a cruise's `cruise_params.m`
+overrides them (checked: neither `test_data/2018_S4P/set_cast_params.m` nor
+`test_data/ancillary/set_cast_params.m` does). `offsetup2down` is a **velocity offset**
+correction between UL and DL (`prepinv.m:177-208`), separate from `rotup2down`'s
+**heading rotation**. It shifts UL/DL velocities by half the median UL−DL residual
+velocity (computed after subtracting a first-guess ocean velocity profile `dr`), split
+with opposite sign the same way `rotup2down` splits its heading residual.
+
+**2. offsetup2down requires a first-guess solve — LDEO's pipeline is iterative, not
+single-pass.** `process_cast.m` steps 10-12 show the real sequence:
+- Step 10 "FORM SUPER ENSEMBLES": `prepinv(d,p)` — applies `rotup2down` only (no `dr` yet).
+- Step 11 "REMOVE SUPER-ENSEMBLE OUTLIERS": runs a preliminary solve (`lanarrow`) to get a
+  first-guess profile, iteratively trimming ~1% outliers.
+- Step 12 "RE-FORM SUPER ENSEMBLES": `prepinv(d,p,dr)` — re-invoked **with** the first-guess
+  profile `dr`, this time applying `offsetup2down` (logged as "adjusted for velocity offset
+  in up and down looking ADCP") and re-applying `rotup2down` ("rotated earlier, use
+  difference" — it does NOT redo the full rotation, only an incremental adjustment).
+
+Confirmed present in the log for **both** reference casts (`test_data/2018_S4P/003.nc`
+and `test_data/2015_P16N/003.nc`) — this is standard production behavior, not a
+cast-specific quirk.
+
+**Consequence:** the Python port's current `rotup2down` call — a single invocation on raw
+data before `prepare_superensembles()`, with no first-guess subtraction, no paired
+`offsetup2down`, and no iteration — implements a different, incomplete procedure from what
+produced the reference output. That plausibly explains why it made RMSE worse rather than
+better: it's not "rotup2down is wrong," it's "half of a two-part, iterative correction,
+applied out of context."
+
+**3. The archived `.nc`/`.mat` reference files are LDEO's FINAL output, not an intermediate
+checkpoint — this breaks the literal Phase 2 §1 plan below.** Checked
+`test_data/2018_S4P/003.mat` (scipy.io.loadmat): its `dr`/`da`/`p`/`ps` structs contain only
+final per-depth-bin profiles (`u`, `v`, `u_do`, `u_up`, `v_do`, `v_up` on the 344-level `z`
+grid) and final per-super-ensemble nav/CTD series (the 550-length `tim` grid) — the same
+content as the `.nc`, just also in `.mat` form. **There is no `d.ru`/`d.rv`/`d.weight`/
+`d.izu`/`d.izu` matrix (bin × ensemble) anywhere in the archive** — the actual boundary
+type between "prep" and "solve" in our own pipeline. LDEO's log references a MATLAB
+`checkpoints/003_1` save file that would have this, but it isn't in `test_data/` and isn't
+retrievable without going back to Thurnherr/LDEO or re-running their MATLAB stack.
+**"Feed LDEO's own inputs directly into `prepare_superensembles()`/`compute_inverse()`"
+(Phase 2 §1, original wording) cannot be done with data currently on disk.**
+
 ## The reframe: the "87° compass offset" is probably not a compass problem
 
 Evidence assembled this session:
@@ -79,11 +152,25 @@ built-in E1 diagnostic worth exposing in `qa/`.
 The medianan and heading episodes cost weeks because one end-to-end RMSE number conflates
 five pipeline stages. Change the validation architecture:
 
-1. **Solver-only harness:** S4P `001/002/003.nc` embed GPS, CTD, SADCP, BT and
-   per-instrument profiles — LDEO's own INPUTS. Feed those directly into
-   `prepare_superensembles()`/`compute_inverse()` and compare to LDEO's OUTPUT in the same
-   file. Any residual is solver-only. (Data already on disk; no ingestion/transforms in
-   the loop.)
+1. **~~Solver-only harness~~ (retired as originally stated — see Phase 1.5 finding 3):**
+   the archived `.nc`/`.mat` files do not contain superensemble-matrix inputs, so they
+   cannot drive `prepare_superensembles()`/`compute_inverse()` directly. Revised step 1,
+   in priority order:
+   a. **Port `offsetup2down` + the iterative first-guess loop** (steps 10-12 of
+      `process_cast.m`: form super-ensembles with `rotup2down` only → preliminary solve →
+      re-form with `offsetup2down` + incremental `rotup2down` using the first-guess `dr`).
+      This is not optional/nice-to-have — `default.m` turns both corrections on for every
+      cast, so no real cast will validate without it. The stashed `rotup2down` port
+      (`stash@{0}`) is reusable as the heading half of this; recover it first
+      (`git stash apply stash@{0}` — apply, not pop, until this is proven out).
+   b. **Re-test end-to-end RMSE only after (a) is wired in** — this is the fair test of
+      whether the transform layer (Phase 1) is actually clean, since Phase 1's isolated
+      rotup2down test was confounded by the missing offsetup2down/iteration structure.
+   c. If a true stage-isolated solver check is still wanted after that, it requires either
+      obtaining LDEO's own intermediate checkpoint (contact Thurnherr/LDEO — not in this
+      repo) or accepting that our own `prepare_superensembles()` output (post our full
+      ingestion+transform+edit+prepinv-equivalent stages) is the only per-ensemble matrix
+      available, which reintroduces upstream stages rather than isolating the solver.
 2. **Transform-only check:** E1/E2 above, promoted to a permanent integration test.
 3. **Ingestion-only checks:** already exist (PD0 header tests).
 4. **Acceptance criteria:** replace flat `RMSE < 0.05` with (a) RMSE within LDEO's own
@@ -122,6 +209,8 @@ inherits the doubt.
 |---|---|
 | "UL compass is 87° off; correct it" | **Retired** — evidence points to mounting azimuth + a Python transform-convention bug; fix the convention, never hardcode the angle |
 | "rotup2down is the missing step for the constant offset" | **Retired as stated** — it handles fluctuations only; still worth porting after the transform fix |
+| "rotup2down alone should close (part of) the RMSE gap" | **Retired 2026-07-05** — LDEO always pairs it with `offsetup2down` inside an iterative first-guess loop (`default.m` sets both to 1); tested alone, out of that context, it made RMSE worse. Not a rotup2down bug — port `offsetup2down` + the loop before re-testing |
+| "S4P/P16N `.nc`/`.mat` files can drive a solver-only harness directly" | **Retired 2026-07-05** — confirmed via `scipy.io.loadmat` that they hold only final per-depth profiles and final per-super-ensemble nav/CTD series, no bin×ensemble matrix; LDEO's own intermediate checkpoint isn't archived here |
 | "negate UL pitch is the complete inverted-instrument treatment" | **Under test (E1/C1)** — prime suspect |
 | "validate end-to-end RMSE<0.05 on one cast" | **Retired** — stage-wise harness + stratified, uncertainty-aware criteria |
 | "P16N cast 003 is the only raw+reference pair available" | **Retired** — S4P raw is retrievable; Nuyina cast already local |
