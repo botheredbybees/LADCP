@@ -5,6 +5,19 @@
 tried and rejected (worsens RMSE). RMSE target (< 0.05 m/s) not yet met — remaining gap
 not yet root-caused.
 
+**2026-07-06 session:** solver-only harness + stage-diff methodology fixes
+executed — see `octave_harness/REPORT.md` sections P3/P1/P2 for the verdict
+on where the Python pipeline diverges from LDEO_IX. Headline: the solver is
+exonerated (Python `compute_inverse()` vs Octave `getinv.m` agree to
+u/v RMSE ~0.01 m/s given identical input), and the new lead is a
+depth-varying `izm` (bin-depth-assignment) offset between the two
+pipelines — mean +34.2 m, growing to 108.8 m max, correlated (r=-0.80) with
+cast depth — found upstream of the solver at Stage A/C and now the prime
+suspect for the remaining ~0.09 m/s (u) full-pipeline gap. See
+`octave_harness/REPORT.md`'s "What the next session should investigate"
+for the concrete next measurement (comparing `assign_bin_depths()` vs
+`getdpthi.m`).
+
 ## Current numbers (`scripts/diag_rmse_strata.py`, convention fix applied, no rotup2down)
 
 | stratum | n | u RMSE | v RMSE | r(u) |

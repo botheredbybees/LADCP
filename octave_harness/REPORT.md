@@ -225,33 +225,73 @@ still-unexplained 1000-2000 m stratum gap.
 
 ## What the next session should investigate
 
-**Priority 1: resolve the Stage A/C alignment puzzle.** Before trusting any
-stage-by-stage numeric comparison upstream of the final solution, confirm
-whether `process_cast.m` step 8's pitch/roll correction changes `d.ru`/`rv`
-in a way our Python `post_edit` stage doesn't capture. If it does, either
-replicate that step's effect in a comparable Python stage, or move the
-comparison point to right after step 8 specifically (a dump already exists:
-`dumps/step08.mat`). If it doesn't explain the gap, the row/bin-alignment
-assumption (confirmed only via izd/izu index arrays, not by inspecting
-actual depth continuity across the UL/DL boundary) needs a direct check:
-print `izm` at rows 24/25/26 for a well-populated ensemble and confirm depth
-increases monotonically across the boundary in both pipelines.
+Priorities 1-3 above (Stage A/C alignment puzzle, rerun `diff_stages.py`,
+solver-only harness) were all executed this session (2026-07-06) — see the
+P3, P1, and P2 sections below for the results. **Do not re-open those
+questions; read their verdicts first.** In one line: the solver is
+exonerated (P3), the step-8 pitch/roll hypothesis is dead (P1a), and the
+first genuine DIVERGES stage is Stage A `ru`, driven by a depth-varying
+`izm` (bin-depth-assignment) offset between the two pipelines (P1b/P2).
 
-**Priority 2, if Priority 1 resolves cleanly:** rerun `diff_stages.py` and
-find the real first-DIVERGES stage — that's the actual deliverable this
-harness was built for. Given M4's result (harness beats Python against the
-archived answer), the superensemble/solver stages are the most likely
-candidates, not ingestion/transform.
+**Priority 1 for the next session: find where the depth-varying `izm`
+offset originates.** P2 quantified it precisely — mean +34.2 m, median
++31.0 m, rms 47.9 m, max 108.8 m, correlation of per-column mean diff with
+per-column mean depth = −0.80 (Octave assigns bins deeper, and the gap
+grows with cast depth rather than being a fixed vertical shift; row-
+independent, ruling out a bin-index/row error) — but did not isolate *why*
+it happens. Candidate mechanisms, in the order they touch the depth
+calculation:
+- Python's `assign_bin_depths()` in `src/ladcp/ingestion/ctd.py:350`
+  vs. Octave's `docs/legacy/getdpthi.m` — compare the two functions
+  line-by-line for a sound-speed-corrected bin-range difference (a
+  depth-dependent, row-independent offset growing to ~2.5% of depth at
+  4300 m is the classic signature of a sound-speed correction applied in
+  one pipeline but not the other, or applied with a different reference
+  profile).
+- Pressure→depth conversion (different gravity/EOS constants or formula).
+- CTD-time alignment feeding a time-varying pressure into the bin-depth
+  calculation (would explain why the offset grows with elapsed cast time,
+  not just nominal depth).
 
-**Priority 3:** the step-12 `di` dump (`dumps/step12.mat`) is the true
-solver input and is already saved — it directly enables the originally-
-planned solver-only harness (feed `di` into `compute_inverse()` directly)
-without needing any of the above resolved first, if that's a faster path
-to isolating the solver specifically.
+**Technique to reuse (one stage earlier than `solver_only.py`):** the
+P3 solver-only comparison worked by feeding an Octave dump (`step12.mat`'s
+`di`) directly into the Python function that would normally consume
+Python's own upstream output (`compute_inverse()`), isolating that one
+function from everything upstream of it. Apply the same trick one stage
+earlier:
+1. Load Octave's step09 dump (`dumps/step09.mat`, struct `d`, has `d.izm`
+   already computed) and Octave's step12 dump (`dumps/step12.mat`, struct
+   `di`) the same way `octave_harness/diff_stages.py` and
+   `octave_harness/solver_only.py` already do (see their `_load()` /
+   `scipy.io.loadmat` usage for the loader pattern).
+2. Feed Octave's `d.izm`/`d.ru`/`d.rv`/`d.rw` (step09) into Python's
+   `prepare_superensembles()` (`src/ladcp/solution/inverse.py:346`) in
+   place of the Python `post_edit` stage's own `ens.izm`, and compare the
+   resulting super-ensemble `z`/`ru`/`rv` against Octave's own `di` (step12)
+   super-ensembles. If the Stage C gap collapses when Octave's izm is used
+   as input, that confirms the depth-registration difference (not the
+   super-ensemble averaging logic) is what's corrupting Stage C/D.
+3. In parallel (cheaper, more direct), call `assign_bin_depths()` and
+   `getdpthi.m` on identical CTD-time/pressure inputs and diff their
+   outputs directly — this isolates the depth-assignment function itself
+   from any downstream masking/pairing artifacts and is likely the fastest
+   way to find the exact formula/constant difference.
+
+**Housekeeping (small, do alongside the above, not instead of it):**
+- `octave_harness/diff_stages.py` lines 141/148/199 still print/comment a
+  stale "~15 m" izm NOTE (P1's two-column estimate); update the text to
+  reference P2's full-array numbers (mean 34.2 m / rms 47.9 m / grows with
+  depth) so the script's own output doesn't understate the finding.
+- The izm summary statistics quoted in P2 (mean/median/depth-correlation)
+  were computed with ad-hoc scratch code, not committed to
+  `diff_stages.py` or any tracked script — if this measurement needs to be
+  reproduced or extended (e.g. per-row breakdown), write it as a small
+  reusable script rather than re-deriving it interactively.
 
 Numbers in this report come only from commands actually run this session
 (`octave_harness/diff_ingestion.py`, `octave_harness/diff_stages.py`, the
-ad-hoc M4 triangle script, `pytest`).
+ad-hoc M4 triangle script, `octave_harness/solver_only.py`,
+`octave_harness/diag_stage_a.py`, `pytest`).
 
 ## P3 — solver-only comparison (session 2026-07-06)
 
