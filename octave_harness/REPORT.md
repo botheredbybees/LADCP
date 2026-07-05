@@ -236,10 +236,13 @@ first genuine DIVERGES stage is Stage A `ru`, driven by a depth-varying
 **Priority 1 for the next session: find where the depth-varying `izm`
 offset originates.** P2 quantified it precisely — mean +34.2 m, median
 +31.0 m, rms 47.9 m, max 108.8 m, correlation of per-column mean diff with
-per-column mean depth = −0.80 (Octave assigns bins deeper, and the gap
-grows with cast depth rather than being a fixed vertical shift; row-
-independent, ruling out a bin-index/row error) — but did not isolate *why*
-it happens. Candidate mechanisms, in the order they touch the depth
+per-column mean depth = −0.80 (sign convention: diff = Octave − Python with
+`izm` negative-down, so the positive mean means Octave assigns bins
+*shallower* on average — Octave is slightly deeper near the cast start
+(column-mean diff −20.8 m) and increasingly shallower at depth (up to
+~+90–105 m); the gap grows with cast depth rather than being a fixed
+vertical shift, and is row-independent, ruling out a bin-index/row error)
+— but did not isolate *why* it happens. Candidate mechanisms, in the order they touch the depth
 calculation:
 - Python's `assign_bin_depths()` in `src/ladcp/ingestion/ctd.py:350`
   vs. Octave's `docs/legacy/getdpthi.m` — compare the two functions
@@ -541,9 +544,10 @@ beyond Fix 3's mean/median/min/max/corr scope) found the offset is
 error) but **varies strongly with time/cast-depth**: column-mean diff
 ranges from about **−20.8 m** near the start of the cast to ~+90–105 m near
 the cast's maximum depth (correlation of per-column mean diff with
-per-column mean depth = −0.80; sign convention: `izm` is negative-down, so
-this correlation means the offset grows in magnitude as the cast gets
-deeper). It is not a clean proportional (percentage-of-depth)
+per-column mean depth = −0.80; the per-cell correlation now printed by
+`diff_stages.py`, −0.800, coincides because the offset is row-uniform;
+sign convention: `izm` is negative-down, so this correlation means the
+offset grows in magnitude as the cast gets deeper). It is not a clean proportional (percentage-of-depth)
 scaling either (diff/|depth| ratios range roughly −0.03 to +0.08 across the
 depth range, not a single constant fraction). **Net effect on the P1
 "~15 m offset" characterization:** confirmed as a real, non-trivial,
