@@ -259,8 +259,8 @@ P3 solver-only comparison worked by feeding an Octave dump (`step12.mat`'s
 Python's own upstream output (`compute_inverse()`), isolating that one
 function from everything upstream of it. Apply the same trick one stage
 earlier:
-1. Load Octave's step09 dump (`dumps/step09.mat`, struct `d`, has `d.izm`
-   already computed) and Octave's step12 dump (`dumps/step12.mat`, struct
+1. Load Octave's step09 dump (`octave_harness/work/dumps/step09.mat`, struct `d`, has `d.izm`
+   already computed) and Octave's step12 dump (`octave_harness/work/dumps/step12.mat`, struct
    `di`) the same way `octave_harness/diff_stages.py` and
    `octave_harness/solver_only.py` already do (see their `_load()` /
    `scipy.io.loadmat` usage for the loader pattern).
@@ -277,16 +277,15 @@ earlier:
    from any downstream masking/pairing artifacts and is likely the fastest
    way to find the exact formula/constant difference.
 
-**Housekeeping (small, do alongside the above, not instead of it):**
-- `octave_harness/diff_stages.py` lines 141/148/199 still print/comment a
-  stale "~15 m" izm NOTE (P1's two-column estimate); update the text to
-  reference P2's full-array numbers (mean 34.2 m / rms 47.9 m / grows with
-  depth) so the script's own output doesn't understate the finding.
-- The izm summary statistics quoted in P2 (mean/median/depth-correlation)
-  were computed with ad-hoc scratch code, not committed to
-  `diff_stages.py` or any tracked script — if this measurement needs to be
-  reproduced or extended (e.g. per-row breakdown), write it as a small
-  reusable script rather than re-deriving it interactively.
+**Housekeeping (done in the final-review fix wave, 2026-07-06):**
+- `octave_harness/diff_stages.py`'s stale "~15 m" izm NOTE (P1's two-column
+  estimate) has been updated to reference P2's full-array numbers (rms
+  47.9 m, growing in magnitude with cast depth) so the script's own output
+  doesn't understate the finding.
+- The izm summary statistics quoted in P2 (mean/median/min/max/
+  depth-correlation) are now reproduced by `diff_stages.py` itself (printed
+  immediately after the Stage A izm row), not ad-hoc scratch code — see the
+  `izm diff (oct - py): ...` line in its output.
 
 Numbers in this report come only from commands actually run this session
 (`octave_harness/diff_ingestion.py`, `octave_harness/diff_stages.py`, the
@@ -529,17 +528,22 @@ matches the pre-refactor 0.093/0.063 (P1/2026-07-05 baseline). The
 50 rows × 7682 time-matched columns (100% finite-match — `izm` is a
 coordinate field, not independently masked, so mask_disagree=0% here),
 `d9.izm − ens_pe.izm` has **mean +34.2 m, median +31.0 m, rms 47.9 m,
-max|diff| 108.8 m, min diff −20.8 m**. This is larger and more variable
-than P1's two-column estimate (~14.4–15.0 m) — the 2026-07-06 follow-up
-investigation (per-row and per-column breakdown, not committed to
-`diff_stages.py` since it is ad-hoc diagnosis, not a reusable comparison)
-found the offset is **uniform across all 50 rows** (row-independent, ruling
-out a row/bin-index error) but **varies strongly with time/cast-depth**:
-column-mean diff ranges from about −20 m near the start of the cast to
-~+90–109 m near the cast's maximum depth (correlation of per-column mean
-diff with per-column mean depth = −0.80; sign convention: `izm` is
-negative-down, so this correlation means the offset grows in magnitude as
-the cast gets deeper). It is not a clean proportional (percentage-of-depth)
+max|diff| 108.8 m, per-cell min diff −24.2 m** (this per-cell min is now
+reproduced directly by `diff_stages.py`'s `izm diff (oct - py): ...` line,
+printed immediately after the Stage A izm row; an earlier draft of this
+paragraph quoted "−20.8 m" for the min, which was actually the min of
+*per-column-mean* diff, not the per-cell min — see below). This is larger
+and more variable than P1's two-column estimate (~14.4–15.0 m) — the
+2026-07-06 follow-up investigation (per-row and per-column breakdown, not
+committed to `diff_stages.py` since it is a one-off diagnostic breakdown
+beyond Fix 3's mean/median/min/max/corr scope) found the offset is
+**uniform across all 50 rows** (row-independent, ruling out a row/bin-index
+error) but **varies strongly with time/cast-depth**: column-mean diff
+ranges from about **−20.8 m** near the start of the cast to ~+90–105 m near
+the cast's maximum depth (correlation of per-column mean diff with
+per-column mean depth = −0.80; sign convention: `izm` is negative-down, so
+this correlation means the offset grows in magnitude as the cast gets
+deeper). It is not a clean proportional (percentage-of-depth)
 scaling either (diff/|depth| ratios range roughly −0.03 to +0.08 across the
 depth range, not a single constant fraction). **Net effect on the P1
 "~15 m offset" characterization:** confirmed as a real, non-trivial,

@@ -138,19 +138,41 @@ def main() -> None:
         verdicts.append(_row_diff(field, oct_arr, py_arr, oct_time, py_time, "time"))
 
     # Task 4's (P1) named next measurement: full-array d.izm - ens.izm
-    # statistics, to quantify the ~15 m depth-registration offset it found
-    # at two sample columns. izm is METRES OF DEPTH, not m/s -- a large rms
+    # statistics, to quantify the depth-registration offset it found at two
+    # sample columns (an early ~15 m estimate). P2's full-array measurement
+    # superseded that: the offset is depth-varying (rms 47.9 m, max|diff|
+    # 108.8 m), growing in magnitude with cast depth rather than being a
+    # fixed ~15 m shift. izm is METRES OF DEPTH, not m/s -- a large rms
     # here is the EXPECTED finding (confirming/quantifying the offset), so
     # a DIVERGES verdict on this row is correct and informative, not a
     # velocity divergence. Kept out of the velocity-only FIRST-DIVERGES
     # tally in the Summary below.
     print("    NOTE: izm units are metres of depth, not m/s -- DIVERGES here "
-          "means the ~15 m registration offset (P1), not a velocity gap.")
+          "means the depth-varying registration offset (P2: rms 47.9 m, "
+          "growing in magnitude with cast depth), not a velocity gap.")
     izm_verdict = _row_diff(
         "izm (depth registration, all bins)", d9.izm, ens_pe.izm,
         oct_time, py_time, "time",
     )
     verdicts.append(izm_verdict)
+
+    # Reproducible summary stats for the izm depth-registration offset (P2
+    # measurement) -- computed here so REPORT.md's quoted mean/median/corr
+    # numbers can be regenerated from this tracked script instead of the
+    # ad-hoc scratch code used to first derive them.
+    izm_idx, _ = _nearest_match(oct_time, py_time)
+    izm_o = np.asarray(d9.izm, dtype=float)
+    izm_p = np.asarray(ens_pe.izm, dtype=float)[..., izm_idx]
+    izm_finite = np.isfinite(izm_o) & np.isfinite(izm_p)
+    izm_diff = izm_o[izm_finite] - izm_p[izm_finite]
+    izm_depth = izm_o[izm_finite]
+    izm_corr = float(np.corrcoef(izm_diff, izm_depth)[0, 1])
+    print(
+        f"    izm diff (oct - py): mean={izm_diff.mean():.2f} "
+        f"median={np.median(izm_diff):.2f} min={izm_diff.min():.2f} "
+        f"max={izm_diff.max():.2f}  corr(diff, depth)={izm_corr:.3f}  "
+        "(both negative-down: negative diff = Octave deeper)"
+    )
 
     # --- Stage C: super-ensembles (Octave step12 di vs our se) ---
     # Depth-bin-aware pairing (Task 5, P2): superensemble bin centers don't
@@ -196,9 +218,10 @@ def main() -> None:
         print(f"{name:<28}{max_diff:>12.4g}{rms_diff:>12.4g}{pct:>9.1f}%{verdict:>12}")
         if verdict == "DIVERGES" and first_diverge is None:
             first_diverge = name
-        # izm is metres of depth, not m/s -- its expected ~15 m DIVERGES
-        # (P1's depth-registration finding) must not stand in for a
-        # velocity verdict, so it's tracked separately here.
+        # izm is metres of depth, not m/s -- its expected depth-varying
+        # DIVERGES (P2's depth-registration finding: rms 47.9 m, growing
+        # in magnitude with cast depth) must not stand in for a velocity
+        # verdict, so it's tracked separately here.
         if verdict == "DIVERGES" and first_diverge_velocity is None and "izm" not in name:
             first_diverge_velocity = name
     if first_diverge:
