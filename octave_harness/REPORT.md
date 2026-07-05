@@ -313,3 +313,12 @@ gap. The presolve-informed velerr config is only marginally closer to
 Octave's `dr` (0.0082/0.0095 vs 0.0087/0.0098) and essentially identical
 against the archive (0.0677/0.0287 vs 0.0673/0.0287) — consistent with
 `dragfac=0` meaning the presolve `dr` coupling exercised here is weak.
+
+## P1 — Stage A/C alignment puzzle (session 2026-07-06)
+
+**Step-8 hypothesis:** RESOLVED-NO-OP. p.tiltcor = 0.0 (scalar);
+step07 vs step08 d.ru/rv/rw identical (0 cells differing across all three
+arrays, shape (50, 7682) each). The REPORT.md 2026-07-05 candidate "step 8
+applies a correction our Python pipeline does not capture" is refuted; the
+Stage A residual must come from comparison alignment or genuine
+editing/masking differences (see below).
