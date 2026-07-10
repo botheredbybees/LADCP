@@ -68,7 +68,7 @@ class CastParams:
     sadcp_err: np.ndarray | None = None
 
     @classmethod
-    def from_ldeo_nc(cls, path: Path | str, **overrides) -> "CastParams":
+    def from_ldeo_nc(cls, path: Path | str, **overrides) -> CastParams:
         """Read cast parameters from an LDEO_IX output NetCDF's attributes.
 
         Uses GEN_Magnetic_deviation_deg (or drot), lat, uship/vship, and
