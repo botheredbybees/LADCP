@@ -42,6 +42,42 @@ def _load(step: int):
     return sio.loadmat(DUMPS / f"step{step:02d}.mat", struct_as_record=False, squeeze_me=True)
 
 
+def _oct_label_shift_days():
+    """Measure the ADCP time-label shift loadctd.m applied in the Octave run.
+
+    loadctd.m line 443 shifts d.time_jul by its besttlag lagdt (-23.24 s this
+    cast), moving Octave's labels off the ADCP clock that Python's labels use.
+    Worse, this cast's staggered ping pattern (1.33/1.58 s) repeats every
+    2.91 s and 23.24 s = 16 pings almost exactly, so nearest-TIME matching
+    silently pairs ensembles 16 pings apart with only ~13 ms apparent error
+    (P1's "column/time mismatch ruled out" was fooled by this). Content-match
+    the heading series (untouched by loadctd) between the pre-loadctd step03
+    dump and step09 to recover the true pairing, and return the label shift
+    to subtract from Octave times before time-matching against Python.
+    """
+    d3 = _load(3)["d"]
+    d9 = _load(9)["d"]
+    h3 = np.asarray(d3.hdg, dtype=float)
+    h9 = np.asarray(d9.hdg, dtype=float)
+    if h3.ndim > 1:
+        h3 = h3[0]
+    if h9.ndim > 1:
+        h9 = h9[0]
+    c3 = np.exp(1j * np.radians(h3))
+    c9 = np.exp(1j * np.radians(h9))
+    best_k, best_co = 0, -1.0
+    for k in range(h3.size - h9.size + 1):
+        co = float(np.abs(np.vdot(c3[k:k + h9.size], c9))) / h9.size
+        if co > best_co:
+            best_k, best_co = k, co
+    t3 = np.asarray(d3.time_jul, dtype=float)
+    t9 = np.asarray(d9.time_jul, dtype=float)
+    shift_days = float(np.mean(t9 - t3[best_k:best_k + t9.size]))
+    print(f"    Octave label shift (loadctd lagdt): {shift_days*86400:+.2f} s "
+          f"(heading content-match k={best_k}, coherence={best_co:.4f})")
+    return shift_days
+
+
 def _nearest_match(key_a, key_b):
     """Return indices into b nearest each element of a (1-D sort-based join)."""
     order = np.argsort(key_b)
@@ -127,7 +163,9 @@ def main() -> None:
     step9 = _load(9)
     d9 = step9["d"]
     ens_pe = stages["post_edit"]
-    oct_time = np.asarray(d9.time_jul, dtype=float)
+    # Undo loadctd.m's ADCP time-label shift so nearest-time matching pairs
+    # the SAME physical pings (see _oct_label_shift_days docstring).
+    oct_time = np.asarray(d9.time_jul, dtype=float) - _oct_label_shift_days()
     py_time = ens_pe.time_jul
     for field, oct_arr, py_arr in [
         ("ru (east vel, all bins)", d9.ru, ens_pe.u),
