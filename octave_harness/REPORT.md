@@ -533,16 +533,31 @@ difference (rms ~0.12 on both-finite cells; max-diff cells are Python-side
 unmasked garbage, e.g. 14 m/s near-surface values Octave's
 loadrdi-`outlier()`/`edit_data.m` chain removes).
 
-**What the next session should investigate (P4 handoff):**
-1. Port the missing editing steps: `loadrdi.m::outlier()` (per-block
-   outlier rejection at ingestion) and `edit_data.m`'s bin-1 masking
-   ("masking downlooker/uplooker bin 1 because of zero blanking distance"
-   in the step09 log) — these remove exactly the garbage cells that
-   dominate Stage A max|diff| and plausibly much of its rms.
+**P4 continued (same session): editing port executed.** Item 1 below was
+done immediately (commit `25df9de`): `edit_outliers()` (loadrdi
+`outlier()` port — per-5-min-block, two-sweep 4σ/3σ, DL/UL independent,
+NaNs velocities not just weights, bottom-track/hbot rejection included)
+and `edit_mask_bins()` (edit_data.m bin masking; pipeline masks bin 0 of
+each instrument because both have zero blanking distance). Measured
+effect: Stage A ru rms 0.117 → **0.080** (session cumulative 0.215 →
+0.080), max|diff| 14.3 → **3.0 m/s** (the Python-side garbage cells are
+gone), mask_disagree 9.4 → 7.4%; Stage C ru rms 0.098 → 0.094; archive
+RMSE (NEW config) u 0.0848 → **0.0787**, v 0.0595 → **0.0552**.
+
+**What the next session should investigate (P4 handoff, updated):**
+1. ~~Port `loadrdi.m::outlier()` + bin-1 masking~~ — DONE, see above.
 2. Sound-speed corrections Python lacks: velocity scaling `ss/sv`
-   (`getdpthi.m:182-207`) and bin-length scaling for izm
-   (`getdpthi.m:428-439`, the remaining ±7 m).
-3. Re-measure Stage C/D and archive RMSE after (1)+(2).
+   (`getdpthi.m:182-207`, needs a `sounds.m` port + CTD temp at the
+   instrument) and bin-length scaling for izm (`getdpthi.m:428-439`,
+   explains the remaining izm ±7 m row-dependent residual).
+3. The residual Stage A rms (~0.08 u/v on both-finite cells, max|diff|
+   ~3 m/s) — remaining candidates: 3-beam solutions (Octave computes
+   14422 DL / 8473 UL 3-beam solutions where one beam is bad; Python's
+   beam2earth() has no 3-beam path, so those cells either differ or get
+   garbage from a bad beam), and the remaining mask policy differences
+   (rows 24-25 instrument-nearest-bin masking, 7.4% mask_disagree).
+4. Re-measure Stage C/D and archive RMSE after (2)+(3); the 1000-2000 m
+   u stratum (0.1414) is still the dominant archive-RMSE contributor.
 
 ## P2 — stage-diff rerun with corrected methodology (session 2026-07-06)
 

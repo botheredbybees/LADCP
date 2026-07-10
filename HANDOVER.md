@@ -22,33 +22,40 @@ divergence stage).
   The physical CTD-ADCP clock offset in Python's data is only −0.5 s,
   measured by the new `estimate_ctd_adcp_lag()`.
 
-## Current state after the P4 fix
+Same session, second milestone: **ported `loadrdi.m::outlier()` and
+`edit_data.m` bin-1 masking** (`edit_outliers()` / `edit_mask_bins()`,
+commit `25df9de`) — the Python-side unmasked garbage (14 m/s cells) that
+dominated Stage A max|diff| is gone.
+
+## Current state after the P4 fix + editing port
 
 - izm vs Octave step09: rms 47.9 m → **1.55 m** (mean +0.02 m, no depth
   correlation). Residual max 7.2 m ≈ the sound-speed bin-length scaling
   Python doesn't yet apply.
-- Stage A ru rms vs Octave: 0.215 → **0.117** m/s (the 16-ping mispairing
-  was a large chunk of the "unresolved" P1 residual).
-- Full suite: **203 passed, 8 skipped, 2 xfailed** (the two RMSE checks).
+- Stage A ru rms vs Octave: 0.215 → 0.117 (ping-pairing fix) → **0.080**
+  (editing port); max|diff| 14.3 → **3.0 m/s**.
+- Full suite: **209 passed, 8 skipped, 2 xfailed** (the two RMSE checks).
 
-## Current numbers (`scripts/diag_rmse_strata.py`, NEW config, 2026-07-10)
+## Current numbers (`scripts/diag_rmse_strata.py`, NEW config, 2026-07-10,
+after the P4 depth fix AND the outlier/bin-1 editing port)
 
 | stratum | n | u RMSE | v RMSE | r(u) |
 |---|---|---|---|---|
-| TOTAL | 520 | 0.0848 | 0.0595 | +0.343 |
-| 0–1000 m | 120 | 0.0138 | 0.0179 | +0.973 |
-| 1000–2000 m | 121 | 0.1540 | 0.0447 | +0.750 |
-| 2000–3000 m | 122 | 0.0644 | 0.0916 | +0.343 |
-| 3000–4500 m | 157 | 0.0464 | 0.0586 | +0.416 |
+| TOTAL | 520 | 0.0787 | 0.0552 | +0.409 |
+| 0–1000 m | 120 | 0.0149 | 0.0171 | +0.969 |
+| 1000–2000 m | 121 | 0.1414 | 0.0471 | +0.754 |
+| 2000–3000 m | 122 | 0.0623 | 0.0768 | +0.368 |
+| 3000–4500 m | 157 | 0.0439 | 0.0597 | +0.428 |
 
-**Note the u TOTAL moved 0.0678 → 0.0848 despite the fix being verifiably
-correct** (validated against p2z's check value and against Octave's own z to
-1.55 m rms). The old, better-looking total was partly error cancellation:
-wrong depth registration (+90 m at depth) happened to partially compensate
-the Stage A velocity-structure difference in 1000–2000 m. Deep water
-(3000–4500 m) — where velocity structure is weak and depth registration
-dominates — improved as predicted (0.0720 → 0.0464). Do not "fix" the RMSE
-by reverting the depth conversion.
+**Trajectory this session (u TOTAL): 0.0678 → 0.0848 (depth fix) →
+0.0787 (editing port).** The intermediate rise is expected, not a
+regression signal: the old 0.0678 was partly error cancellation — the
+wrong depth registration (+90 m too deep at the bottom) partially
+compensated the Stage A velocity-structure difference in 1000–2000 m.
+Deep water (3000–4500 m), where velocity structure is weak and depth
+registration dominates, improved as predicted (0.0720 → 0.0439). Do not
+"fix" the RMSE by reverting the depth conversion — it is validated against
+p2z's documented check value and against Octave's own z to 1.55 m rms.
 
 **Note on running tests on this machine**: `uv run pytest` fails with a
 broken entry-point shim. Use `TEST_DATA_DIR=test_data uv run python -m
@@ -56,18 +63,22 @@ pytest` instead.
 
 ## Remaining work to close the RMSE gap (priority order)
 
-The honest first divergence is now Stage A velocities (rms ~0.12 m/s on
-both-finite cells, max|diff| 14 m/s from Python-side unmasked garbage).
-See REPORT.md P4 handoff for detail:
+The honest first divergence is Stage A velocities, now down to rms ~0.08
+m/s on both-finite cells, max|diff| ~3 m/s. See REPORT.md's updated "P4
+handoff" for detail:
 
-1. **Port the missing editing steps**: `loadrdi.m::outlier()` (ingestion-
-   time outlier rejection; the Octave log shows it discarding ~6952 DL /
-   4338 UL bins) and `edit_data.m`'s bin-1 masking ("zero blanking
-   distance"). These remove exactly the garbage cells dominating Stage A.
-2. **Sound-speed corrections**: velocity scaling `ss/sv`
-   (`getdpthi.m:182-207`) and bin-length scaling for izm
-   (`getdpthi.m:428-439`).
-3. Re-measure `diff_stages.py` and `diag_rmse_strata.py` after 1–2.
+1. **Sound-speed corrections**: velocity scaling `ss/sv`
+   (`getdpthi.m:182-207`; needs a `sounds.m` port and CTD temperature at
+   the instrument) and bin-length scaling for izm (`getdpthi.m:428-439`,
+   the remaining izm ±7 m row-dependent residual).
+2. **3-beam solutions**: Octave's loadrdi computes 14422 DL / 8473 UL
+   3-beam solutions where one beam is bad; Python's `beam2earth()` has no
+   3-beam path — those cells either differ or inherit a bad beam. Also the
+   remaining mask-policy differences (instrument-nearest bins, 7.4%
+   mask_disagree).
+3. Re-measure `diff_stages.py` and `diag_rmse_strata.py` after 1–2; the
+   1000–2000 m u stratum (0.1414) is still the dominant archive-RMSE
+   contributor.
 
 ## rotup2down: implemented, tested, does not help — not committed
 
@@ -88,4 +99,6 @@ lines 294–418 if ever needed.)
 | `octave_harness/diag_izm_root_cause.py` | New: variant test A/B/C/D/E reproducing and closing the P2 offset |
 | `octave_harness/diff_stages.py` | Stage A undoes Octave's −23.24 s label shift via heading content-match |
 | `octave_harness/REPORT.md` | P4 section + RESOLVED marker on the P2-era priority |
+| `src/ladcp/qa/editing.py` | `edit_outliers()` (loadrdi outlier() port), `edit_mask_bins()` (edit_data.m bin masking) |
+| `tests/test_editing.py` | Unit tests for both new editors (spikes, UL/DL independence, bottom track, no mutation) |
 | `HANDOVER.md` | This file — rewritten |
