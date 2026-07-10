@@ -34,6 +34,7 @@ from ladcp.qa.editing import (  # noqa: E402
     edit_outliers,
     edit_sidelobes,
     edit_w_outliers,
+    tilt_from_pitch_roll,
 )
 from ladcp.solution.inverse import (  # noqa: E402
     EnsembleData,
@@ -184,8 +185,20 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
         # rotup2down (step 10) in LDEO's default pipeline.
         ens, _ = rotup2down(ens, rdi.heading, rdi_ul.heading[ul_idx])
 
+    # prepinv.m parity parameters: superens_std_min is the instrument-
+    # derived Single_Ping_Err/sqrt(Pings_per_Ensemble) (0.083833 for the
+    # P16N WH300s, quoted by the LDEO log); outlier_nblock is LDEO's
+    # p.outlier_n, set once at loadrdi from the RAW ping rate.
+    import math as _math
+    _nblock = int(_math.ceil(
+        5.0 / (float(np.nanmean(np.diff(rdi.time_julian))) * 24.0 * 60.0)))
+    _tilt = tilt_from_pitch_roll(rdi.pitch, rdi.roll)
+
     def _solve(ens: EnsembleData):
-        se = prepare_superensembles(ens)
+        se = prepare_superensembles(
+            ens, superens_std_min=0.083833,
+            outlier_nblock=_nblock, tilt_deg=_tilt,
+        )
         if stages is not None:
             stages["superensembles"] = se
         return compute_inverse(

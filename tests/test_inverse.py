@@ -572,3 +572,66 @@ def test_offsetup2down_returns_new_ensemble():
     out, _ = offsetup2down(ens, dr_z, dr_u, dr_v)
     np.testing.assert_array_equal(ens.u, u_before)
     assert out is not ens
+
+
+# --- prepinv.m windowing parity (P5 follow-up, 2026-07-11) ---
+
+from ladcp.solution.inverse import _stdnan, _window_boundaries
+
+
+def _matlab_windows(trigger, avdz, oversample=1.0):
+    """Direct transliteration of prepinv.m lines 499-519 (1-based inside)."""
+    il = len(trigger)
+    ilast = 1
+    out = []
+    while ilast < il:
+        seg = np.abs(trigger[ilast:il] - trigger[ilast - 1])  # (ilast+1..il)
+        ii = np.flatnonzero(seg > avdz)
+        count = (il - ilast) if ii.size == 0 else (ii[0] + 1)
+        i1 = ilast + np.arange(1, count + 1)                  # 1-based
+        i1l = len(i1) / 2.0 * oversample
+        vec = np.arange(-i1l, i1l + 1e-9)                     # MATLAB colon
+        vals = np.mean(i1) + vec
+        i1 = np.floor(vals + 0.5).astype(int)                 # round half away (positive)
+        i1 = i1[(i1 >= 1) & (i1 <= il)]
+        if len(i1) == 1:
+            i1 = np.array([i1[0], i1[0]])                     # [i1 i1]
+        ilast = int(i1.max())
+        out.append(i1 - 1)                                    # 0-based
+    return out
+
+
+def test_window_boundaries_matches_matlab_transliteration():
+    rng = np.random.default_rng(3)
+    # noisy monotonic descent + staggered flat spots, like a real cast
+    trigger = -np.cumsum(np.abs(rng.normal(1.2, 0.8, 400)))
+    for avdz in (5.0, 8.23):
+        ref = _matlab_windows(trigger, avdz)
+        got = _window_boundaries(trigger, avdz)
+        assert len(got) == len(ref), (avdz, len(got), len(ref))
+        for a, b in zip(got, ref):
+            np.testing.assert_array_equal(a, b)
+
+
+def test_window_boundaries_duplicates_singleton():
+    # A huge avdz-triggering jump every ensemble -> 1-wide windows, which
+    # MATLAB duplicates ([i1 i1]) rather than extending to the next index.
+    trigger = -np.arange(10.0) * 100.0
+    wins = _window_boundaries(trigger, avdz=5.0)
+    for w in wins:
+        assert len(w) >= 2
+        if len(w) == 2 and w[0] == w[1]:
+            return  # at least one duplicated singleton seen
+    raise AssertionError("expected a duplicated singleton window")
+
+
+def test_stdnan_sample_count_semantics():
+    x = np.array([
+        [np.nan, np.nan, np.nan],   # 0 finite -> NaN
+        [1.5, np.nan, np.nan],      # 1 finite -> 0
+        [1.0, 2.0, 3.0],            # ddof=1
+    ])
+    y = _stdnan(x)
+    assert np.isnan(y[0])
+    assert y[1] == 0.0
+    assert abs(y[2] - 1.0) < 1e-12

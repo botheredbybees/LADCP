@@ -27,6 +27,7 @@ from ladcp.qa.editing import (
     edit_outliers,
     edit_sidelobes,
     edit_w_outliers,
+    tilt_from_pitch_roll,
 )
 from ladcp.solution.inverse import (
     EnsembleData,
@@ -256,7 +257,16 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
         dn_bins=[0] if rdi.blnk_m == 0 else [],
         up_bins=[0] if rdi_ul.blnk_m == 0 else [],
     )
-    se = prepare_superensembles(ens)  # dz=None: auto-computes median bin spacing (8m for P16N)
+    # prepinv.m parity: superens_std_min = Single_Ping_Err/sqrt(npng)
+    # (0.083833, P16N WH300s per the LDEO log); outlier_nblock = LDEO's
+    # p.outlier_n from the RAW ping rate; tilt weight per prepinv.m:85-88.
+    import math as _math
+    _nblock = int(_math.ceil(
+        5.0 / (float(np.nanmean(np.diff(rdi.time_julian))) * 24.0 * 60.0)))
+    se = prepare_superensembles(
+        ens, superens_std_min=0.083833, outlier_nblock=_nblock,
+        tilt_deg=tilt_from_pitch_roll(rdi.pitch, rdi.roll),
+    )
     return compute_inverse(
         se,
         u_ship=u_ship, v_ship=v_ship,
@@ -295,14 +305,13 @@ def test_inverse_depth_range(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=False,
-    reason="u RMSE ~0.058 vs 0.05 target as of 2026-07-10 (after depth fix, "
-    "editing port, sound speed, 3-beam); residual is the 1000-2000 m stratum; "
-    "see HANDOVER.md",
-)
 def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
-    """RMS error in u vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
+    """RMS error in u vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3).
+
+    Passing since 2026-07-11 (u RMSE 0.0450): closed by the prepinv.m
+    formation-parity port on top of the depth-registration, editing,
+    sound-speed, 3-beam, UL-pairing, and weight fixes. See HANDOVER.md.
+    """
     ds = netCDF4.Dataset(ref_path)
     ref_z = np.array(ds.variables["z"][:])      # positive m, increasing downward
     ref_u = np.array(ds.variables["u"][:])      # m/s
@@ -323,15 +332,12 @@ def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=False,
-    reason="v RMSE 0.052 vs 0.05 target as of 2026-07-11: the UL-pairing "
-    "sequence-shift fix (Stage A now matches Octave to ~4e-6 m/s rms) moved "
-    "v from a borderline 0.0499 to 0.0519; remaining divergence is the "
-    "weight field (see HANDOVER.md)",
-)
 def test_inverse_v_rmse(inverse_result: InverseResult, ref_path: Path):
-    """RMS error in v vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
+    """RMS error in v vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3).
+
+    Passing since 2026-07-11 (v RMSE 0.0333): closed by the prepinv.m
+    formation-parity port. See HANDOVER.md.
+    """
     ds = netCDF4.Dataset(ref_path)
     ref_z = np.array(ds.variables["z"][:])
     ref_v = np.array(ds.variables["v"][:])

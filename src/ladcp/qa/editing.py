@@ -75,11 +75,23 @@ def _rms(x: np.ndarray) -> float:
     return float(np.sqrt(np.mean(x * x)))
 
 
+def tilt_from_pitch_roll(
+    pitch_deg: np.ndarray, roll_deg: np.ndarray
+) -> np.ndarray:
+    """Combined tilt angle in degrees; loadrdi.m lines 414-415."""
+    pit_r = np.radians(pitch_deg)
+    rol_r = np.radians(roll_deg)
+    return np.degrees(np.arcsin(np.clip(
+        np.sqrt(np.sin(pit_r) ** 2 + np.sin(rol_r) ** 2), 0.0, 1.0)))
+
+
 def edit_outliers(
     ens: EnsembleData,
     *,
     n: tuple[float, ...] = (4.0, 3.0),
     block_minutes: float = 5.0,
+    do_bvel: bool = True,
+    nblock: int | None = None,
 ) -> EnsembleData:
     """Reject velocity outliers per 5-minute block; port of loadrdi.m::outlier().
 
@@ -99,8 +111,9 @@ def edit_outliers(
 
     Returns a new EnsembleData; the input is not modified.
     """
-    dt_min = float(np.nanmean(np.diff(ens.time_jul))) * 24.0 * 60.0
-    nblock = max(1, int(math.ceil(block_minutes / dt_min)))
+    if nblock is None:
+        dt_min = float(np.nanmean(np.diff(ens.time_jul))) * 24.0 * 60.0
+        nblock = max(1, int(math.ceil(block_minutes / dt_min)))
     n_ens = ens.u.shape[1]
     starts = range(0, n_ens, nblock)
 
@@ -111,29 +124,29 @@ def edit_outliers(
     bvel = ens.bvel.copy()
     hbot = ens.hbot.copy()
 
-    for rows, do_bvel in ((ens.izd, True), (ens.izu, False)):
+    for rows, do_bvel_block in ((ens.izd, do_bvel), (ens.izu, False)):
         if len(rows) == 0:
             continue
         ru = u[rows, :].copy()
         rv = v[rows, :].copy()
         rw = w[rows, :].copy()
         dummy = np.zeros_like(rw)
-        bdummy = np.zeros_like(bvel) if do_bvel else None
-        bv = bvel.copy() if do_bvel else None
+        bdummy = np.zeros_like(bvel) if do_bvel_block else None
+        bv = bvel.copy() if do_bvel_block else None
 
         for ni in n:
             rwm = _ref_medianan(rw)
             rw = rw - rwm[np.newaxis, :]
             ru = ru - _ref_medianan(ru)[np.newaxis, :]
             rv = rv - _ref_medianan(rv)[np.newaxis, :]
-            if do_bvel:
+            if do_bvel_block:
                 bv[:, 2] = bv[:, 2] - rwm
             for s in starts:
                 sel = slice(s, min(s + nblock, n_ens))
                 for anom in (rw[:, sel], ru[:, sel], rv[:, sel]):
                     bad = np.abs(anom) > ni * _rms(anom)
                     dummy[:, sel][bad] = np.nan
-                if do_bvel:
+                if do_bvel_block:
                     bu_a = bv[sel, 0] - np.nanmedian(bv[sel, 0])
                     bv[sel, 0] = bu_a
                     bdummy[sel][np.abs(bu_a) > ni * _rms(bu_a)] = np.nan
@@ -153,7 +166,7 @@ def edit_outliers(
         u[rows, :] = u[rows, :] + dummy
         v[rows, :] = v[rows, :] + dummy
         w[rows, :] = w[rows, :] + dummy
-        if do_bvel:
+        if do_bvel_block:
             bvel = bvel + bdummy
             hbot = hbot + bdummy[:, 0]
 
@@ -207,10 +220,7 @@ def build_ldeo_weights(
     col_max = np.nanmax(weight, axis=0)
     weight = weight / np.nanmedian(col_max)
 
-    pit_r = np.radians(pitch_dl)
-    rol_r = np.radians(roll_dl)
-    tilt = np.degrees(np.arcsin(np.clip(
-        np.sqrt(np.sin(pit_r) ** 2 + np.sin(rol_r) ** 2), 0.0, 1.0)))
+    tilt = tilt_from_pitch_roll(pitch_dl, roll_dl)
     weight[:, tilt > tiltmax[0]] = np.nan
 
     def _edge_diff(x: np.ndarray) -> np.ndarray:

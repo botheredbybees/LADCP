@@ -294,52 +294,57 @@ def _ref_medianan(x: np.ndarray) -> np.ndarray:
     return y
 
 
-def _window_boundaries(depth0: np.ndarray, avdz: float, oversample: float = 1.0) -> list[np.ndarray]:
+def _stdnan(x: np.ndarray) -> np.ndarray:
+    """Row-wise stdnan.m semantics over axis 1: NaN for 0 finite samples,
+    0 for exactly 1, N-1-normalized std otherwise."""
+    finite = np.isfinite(x)
+    n = finite.sum(axis=1)
+    out = np.full(x.shape[0], np.nan)
+    out[n == 1] = 0.0
+    multi = n > 1
+    if multi.any():
+        with np.errstate(invalid="ignore"):
+            out[multi] = np.nanstd(x[multi], axis=1, ddof=1)
+    return out
+
+
+def _window_boundaries(
+    trigger: np.ndarray, avdz: float, oversample: float = 1.0
+) -> list[np.ndarray]:
     """Partition ensemble indices into depth-triggered windows.
 
-    Replicates the while-loop in prepinv.m lines 499–605.
+    Exact port of the while-loop in prepinv.m lines 499-519 (verified
+    against a direct transliteration and against Octave's step10 dump).
+    NOTE the trigger series is d.izm(1,:) -- the FIRST-ROW bin depth, i.e.
+    the outermost UL bin -- not the CTD depth d.z; callers must pass
+    ens.izm[0, :].
 
-    MATLAB oversample expansion (default 1.0):
-      - Initial range i1 spans from ilast+1 to the first ensemble where
-        |depth[t] - depth[ilast]| > avdz.
-      - Then i1 is expanded symmetrically around its mean to width
-        length(i1) * oversample, making adjacent windows overlap.
+    MATLAB details replicated (1-based arithmetic internally):
+      - i1 spans ilast+1 .. the first ensemble whose |trigger - trigger[ilast]|
+        exceeds avdz;
+      - oversample expansion: i1 = round(mean(i1) + [-i1l:i1l]) with
+        i1l = len(i1)/2*oversample, MATLAB colon (steps of 1 up to <= i1l)
+        and round-half-AWAY-from-zero (numpy/python round is half-even);
+      - out-of-range indices are REMOVED (not clipped);
+      - a single-element window is DUPLICATED ([i1 i1]), not extended;
       - ilast advances to max(i1) of the expanded window.
-    Windows may therefore contain overlapping ensembles (smoothing effect).
     """
-    n = len(depth0)
+    il = len(trigger)
     windows: list[np.ndarray] = []
-    # MATLAB uses 1-based indexing; ilast=1 means the comparison starts from
-    # index 2 in the first iteration, effectively skipping ensemble 0 from
-    # inclusion as the comparison anchor only. We use 0-based with the same
-    # semantic: ilast is the anchor, i1 starts at ilast+1.
-    ilast = 0
-    while ilast < n - 1:
-        depth_change = np.abs(depth0[ilast + 1:] - depth0[ilast])
-        ii = np.where(depth_change > avdz)[0]
-        if len(ii) == 0:
-            end = n - ilast - 1
-        else:
-            end = int(ii[0]) + 1
-        # Initial range: ilast+1 .. ilast+end (1-indexed: ilast+[1:end])
-        i1_init = np.arange(ilast + 1, min(ilast + 1 + end, n))
-        if len(i1_init) == 0:
-            break
-        # Oversample expansion: expand symmetrically around mean of i1_init
-        i1l = len(i1_init) / 2.0 * oversample
-        center = float(np.mean(i1_init))
-        lo = int(round(center - i1l))
-        hi = int(round(center + i1l))
-        i1 = np.arange(max(0, lo), min(n, hi + 1))
-        if len(i1) == 0:
-            i1 = i1_init
-        # Ensure minimum window size of 2
-        if len(i1) < 2:
-            i1 = np.array([i1[0], min(i1[0] + 1, n - 1)])
-        windows.append(i1)
-        ilast = int(i1[-1])
-        if ilast >= n - 1:
-            break
+    ilast = 1  # 1-based, as in prepinv.m
+    while ilast < il:
+        seg = np.abs(trigger[ilast:il] - trigger[ilast - 1])  # (ilast+1..il)
+        ii = np.flatnonzero(seg > avdz)
+        count = (il - ilast) if ii.size == 0 else (int(ii[0]) + 1)
+        i1 = ilast + np.arange(1, count + 1)                  # 1-based
+        i1l = len(i1) / 2.0 * oversample
+        vec = np.arange(-i1l, i1l + 1e-9)                     # MATLAB colon
+        i1 = np.floor(np.mean(i1) + vec + 0.5).astype(int)    # round half away
+        i1 = i1[(i1 >= 1) & (i1 <= il)]
+        if len(i1) == 1:
+            i1 = np.array([i1[0], i1[0]])
+        windows.append(i1 - 1)                                # to 0-based
+        ilast = int(i1.max())
     return windows
 
 
@@ -347,6 +352,11 @@ def prepare_superensembles(
     ens: EnsembleData,
     *,
     dz: float | None = None,
+    superens_std_min: float = 0.1,
+    apply_outlier: bool = True,
+    outlier_nblock: int | None = None,
+    tilt_deg: np.ndarray | None = None,
+    tilt_weight: float = 10.0,
 ) -> SuperEnsemble:
     """Form super-ensembles by depth-window averaging (replicates prepinv.m).
 
@@ -358,9 +368,36 @@ def prepare_superensembles(
         Depth window size m. Defaults to ``median(|diff(izm[:, 0])|)``
         (all bins of the first ensemble), matching MATLAB's
         ``medianan(abs(diff(d.izm(:,1))))``.
+    superens_std_min:
+        Floor for the super-ensemble velocity std (prepinv.m's
+        ``p.superens_std_min = Single_Ping_Err / sqrt(Pings_per_Ensemble)``,
+        an instrument-derived value -- 0.083833 for the P16N WH300s).
+    apply_outlier:
+        Run the loadrdi outlier() pass on the formed super-ensembles
+        (prepinv.m line 613; bottom-track branch disabled there because
+        di.bvel's orientation fails outlier.m's 4-column check).
+    outlier_nblock:
+        Block size (in super-ensembles) for that outlier pass. LDEO's
+        p.outlier_n is set once at loadrdi from the RAW ping rate
+        (ceil(5 min / ping interval), ~207 here) and NOT recomputed for
+        the super-ensemble series -- pass that value for parity. None
+        recomputes from the SE time spacing (a ~28-SE block).
+    tilt_deg:
+        (n_ens,) combined tilt (see qa.editing.tilt_from_pitch_roll).
+        When given, weight is multiplied by 1 - tanh(tilt/tilt_weight)/2
+        per ensemble before averaging (prepinv.m lines 85-88, applied
+        exactly once per formation -- the d.tilt_weight guard makes
+        step 12's re-form skip it, and this function never mutates ens,
+        so repeated calls stay single-application).
     """
     if dz is None:
         dz = float(np.nanmedian(np.abs(np.diff(ens.izm[:, 0]))))
+
+    # prepinv.m:85-88 -- reduce weight for large tilts (0.5 at tilt_weight
+    # degrees). Applied to a local copy; ens is never mutated.
+    if tilt_deg is not None and tilt_weight > 0:
+        fac = 1.0 - np.tanh(np.asarray(tilt_deg, dtype=float) / tilt_weight) / 2.0
+        ens = replace(ens, weight=ens.weight * fac[np.newaxis, :])
 
     # Reference bins: 2nd and 3rd downlooker bins (0-indexed: offset 1, 2 from min(izd))
     # Replicates: izr = [min(d.izd)+1, min(d.izd)+2]  (MATLAB 1-indexed → same offsets)
@@ -374,7 +411,10 @@ def prepare_superensembles(
         ul_top = int(ens.izu.max())
         izr = np.concatenate([izr, [ul_top - 1, ul_top - 2]])
 
-    windows = _window_boundaries(ens.z, dz)
+    # Windowing trigger is d.izm(1,:) -- the first-row bin depth -- NOT d.z
+    # (prepinv.m line 509; using z instead produced 871 windows vs Octave's
+    # 828 on P16N 003).
+    windows = _window_boundaries(ens.izm[0, :], dz)
     n_se = len(windows)
     n_bins = ens.u.shape[0]
 
@@ -425,42 +465,37 @@ def prepare_superensembles(
         v_deref = v_win - vr_t[np.newaxis, :]
         w_deref = w_win - wr_t[np.newaxis, :]
 
-        def _medianan(x: np.ndarray, n_avg: int) -> np.ndarray:
-            # Replicates MATLAB's medianan(x, n) behavior
-            x = np.moveaxis(x, 1, -1)
+        def _medianan(x: np.ndarray, na: int) -> np.ndarray:
+            # medianan.m with the na argument: na is a HALF-window -- average
+            # the 2*na+1 central sorted values (indexav = round([-na:na] +
+            # len/2), clipped to range; round is half-AWAY-from-zero). With
+            # prepinv's iav = round(n_win/2), 2*na+1 >= n_win+1 always covers
+            # every finite sample, so this degenerates to a NaN-mean -- kept
+            # general here for avpercent != 100 configurations.
+            na = int(na)
             y = np.full(x.shape[0], np.nan)
+            offs = np.arange(-na, na + 1, dtype=float)
             for i in range(x.shape[0]):
-                valid = x[i][np.isfinite(x[i])]
-                li = len(valid)
-                if li > 0:
-                    if n_avg > 1:
-                        if li > n_avg:
-                            valid.sort()
-                            # MATLAB: i1 = max([1, round(li/2 - n/2)])
-                            i1_matlab = max(1, round(li / 2 - n_avg / 2))
-                            i1 = i1_matlab - 1  # 0-indexed
-                            y[i] = np.sum(valid[i1 : i1 + n_avg]) / n_avg
-                        else:
-                            y[i] = np.mean(valid)
-                    else:
-                        y[i] = valid[0]
+                vals = np.sort(x[i][np.isfinite(x[i])])
+                li = vals.size
+                if li == 0:
+                    continue
+                idx = np.floor(offs + li / 2.0 + 0.5).astype(int)  # 1-based
+                idx = idx[(idx >= 1) & (idx <= li)]
+                y[i] = float(np.mean(vals[idx - 1]))
             return y
 
         n_win = len(i1)
-        iav = round(n_win / 2)
+        # prepinv.m:530 iav = round(length(ur)/200*p.avpercent), avpercent=100
+        iav = int(np.floor(n_win / 2.0 + 0.5))
 
         ru[:, im] = _medianan(u_deref, iav) + ruav
         rv[:, im] = _medianan(v_deref, iav) + rvav
         rw[:, im] = _medianan(w_deref, iav) + rwav
 
-        # Velocity uncertainty: combined U+V std over window
-        # Fix I-4: single-sample window — use ddof=0 to return 0 not NaN (matches stdnan())
-        n_win = len(i1)
-        ddof = 1 if n_win > 1 else 0
-        ruvs[:, im] = np.sqrt(
-            np.nanstd(u_win, axis=1, ddof=ddof) ** 2
-            + np.nanstd(v_win, axis=1, ddof=ddof) ** 2
-        )
+        # Velocity uncertainty: combined U+V std over window, stdnan.m
+        # semantics per cell (NaN for 0 finite samples, 0 for exactly 1).
+        ruvs[:, im] = np.sqrt(_stdnan(u_win) ** 2 + _stdnan(v_win) ** 2)
 
         weight_se[:, im] = np.nanmean(ens.weight[:, i1], axis=1)
         izm_se[:, im] = np.nanmean(ens.izm[:, i1], axis=1)
@@ -468,30 +503,69 @@ def prepare_superensembles(
         time_se[im] = np.nanmean(ens.time_jul[i1])
 
         bvel_se[:, im] = np.nanmean(ens.bvel[i1], axis=0)
-        # Fix I-3: detrend w-component by reference vertical velocity before computing std
-        # Replicates prepinv.m lines 565-568: bvel(:,3) = bvel(:,3) - wr(1,:)'
+        # prepinv.m 565-568: remove reference w from bottom-track w before
+        # the std; std has stdnan.m semantics (single sample -> 0, which is
+        # what the later "bottom track std==0" handling keys on).
         bvel_win = ens.bvel[i1].copy()
         bvel_win[:, 2] = bvel_win[:, 2] - wr_t
-        bvels_se[:, im] = np.nanstd(bvel_win, axis=0, ddof=1)
+        bvels_se[:, im] = _stdnan(bvel_win.T)
         hbot_se[im] = np.nanmean(ens.hbot[i1])
         slat_se[im] = np.nanmedian(ens.slat[i1])
         slon_se[im] = np.nanmedian(ens.slon[i1])
 
-    # Time interval between super-ensembles (seconds); mirror edge values
-    # Fix M-1: guard against n_se==1 where dt_mid is empty
+    # --- post-loop processing, in prepinv.m order ---
+
+    # prepinv.m:613 -- outlier() pass on the super-ensembles. The
+    # bottom-track branch is OFF: di.bvel's (3, n_se) orientation fails
+    # outlier.m's size(...,2)==4 check, so LDEO never edits BT here.
+    if apply_outlier:
+        from ladcp.qa.editing import edit_outliers  # local: avoids cycle
+
+        se_tmp = EnsembleData(
+            u=ru, v=rv, w=rw, weight=weight_se, izm=izm_se,
+            z=z_se, time_jul=time_se,
+            bvel=bvel_se.T, bvels=bvels_se.T, hbot=hbot_se,
+            izd=ens.izd, izu=ens.izu, slat=slat_se, slon=slon_se,
+        )
+        se_tmp = edit_outliers(se_tmp, do_bvel=False, nblock=outlier_nblock)
+        ru, rv, rw, weight_se = se_tmp.u, se_tmp.v, se_tmp.w, se_tmp.weight
+
+    # prepinv.m:616-630 -- single-ping bottom-track std -> 0.1, then discard
+    # ensembles whose w std exceeds 2x the median (or is 0).
+    zero_std = np.prod(bvels_se, axis=0) == 0
+    bvels_se[:, zero_std] = 0.1
+    pos = bvels_se[2, :] > 0
+    if pos.any():
+        btrk_wstd = float(np.median(bvels_se[2, pos])) * 2.0
+        bad_bt = (bvels_se[2, :] > btrk_wstd) | (bvels_se[2, :] == 0)
+        bvel_se[:, bad_bt] = np.nan
+        bvels_se[:, bad_bt] = np.nan
+
+    # prepinv.m:640-664 -- delete super-ensembles without any velocity data.
+    with np.errstate(all="ignore"):
+        col_max = np.nanmax(np.where(np.isfinite(ru), ru, -np.inf), axis=0)
+    keep = np.isfinite(col_max) & (col_max > -np.inf)
+    if not keep.all():
+        ru, rv, rw = ru[:, keep], rv[:, keep], rw[:, keep]
+        ruvs, weight_se, izm_se = ruvs[:, keep], weight_se[:, keep], izm_se[:, keep]
+        bvel_se, bvels_se = bvel_se[:, keep], bvels_se[:, keep]
+        z_se, time_se, hbot_se = z_se[keep], time_se[keep], hbot_se[keep]
+        slat_se, slon_se = slat_se[keep], slon_se[keep]
+
+    # prepinv.m:666-674 -- ruvs/weight NaN chain and the std floor.
+    ruvs = ruvs + weight_se * 0
+    weight_se[ruvs == 0] = np.nan
+    ruvs = ruvs + weight_se * 0
+    ruvs[ruvs < superens_std_min] = superens_std_min
+
+    # prepinv.m:684-685 -- dt AFTER the deletions; mirror edge values.
     dt_mid = np.diff(time_se) * 24.0 * 3600.0
     if len(dt_mid) == 0:
-        dt = np.zeros(1)
+        dt = np.zeros(z_se.size)
     else:
-        dt = np.concatenate([[dt_mid[0]], (dt_mid[:-1] + dt_mid[1:]) / 2.0, [dt_mid[-1]]])
-
-    # Floor std at single_ping_err (≈0.01 m/s); propagate NaN from weight
-    # Replicates prepinv.m's superens_std_min logic
-    single_ping_err = 0.01
-    zero_mask = ruvs == 0
-    weight_se[zero_mask] = np.nan
-    ruvs[ruvs < single_ping_err] = single_ping_err
-    ruvs = ruvs + weight_se * 0  # NaN-propagate
+        dt = np.concatenate(
+            [[dt_mid[0]], (dt_mid[:-1] + dt_mid[1:]) / 2.0, [dt_mid[-1]]]
+        )
 
     return SuperEnsemble(
         ru=ru, rv=rv, rw=rw, ruvs=ruvs, weight=weight_se, izm=izm_se,
