@@ -20,8 +20,6 @@ import pytest
 
 from ladcp.ingestion.ctd import assign_bin_depths, estimate_ctd_adcp_lag, load_ctd
 from ladcp.ingestion.rdi import load_rdi
-from ladcp.solution.inverse import EnsembleData, InverseResult, compute_inverse, prepare_superensembles
-from ladcp.transforms.beam2earth import beam2earth, uvrot
 from ladcp.qa.editing import (
     edit_large_velocities,
     edit_mask_bins,
@@ -29,6 +27,13 @@ from ladcp.qa.editing import (
     edit_sidelobes,
     edit_w_outliers,
 )
+from ladcp.solution.inverse import (
+    EnsembleData,
+    InverseResult,
+    compute_inverse,
+    prepare_superensembles,
+)
+from ladcp.transforms.beam2earth import beam2earth, uvrot
 from ladcp.transforms.soundspeed import (
     apply_sound_speed_correction,
     depth_to_pressure,
@@ -96,7 +101,7 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     u_dl, v_dl, w_dl = beam2earth(
         rdi.u, rdi.v, rdi.w, rdi.e,
         rdi.heading, rdi.pitch, rdi.roll,
-        THETA_DEG, gimbaled=False, beams_up=False,
+        THETA_DEG, gimbaled=False, beams_up=False, allow_3beam=True,
     )
     # Rotate from magnetic North to true North.  Our uvrot is CCW-positive, but
     # East magnetic declination is a CW heading shift, so we pass -DROT_DEG.
@@ -129,7 +134,7 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     u_ul, v_ul, w_ul = beam2earth(
         rdi_ul.u, rdi_ul.v, rdi_ul.w, rdi_ul.e,
         rdi_ul.heading, rdi_ul.pitch, rdi_ul.roll,
-        THETA_DEG, gimbaled=False, beams_up=True,
+        THETA_DEG, gimbaled=False, beams_up=True, allow_3beam=True,
     )
     u_ul, v_ul = uvrot(u_ul, v_ul, -DROT_DEG)
 
@@ -171,7 +176,7 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
         rdi.btrack_vel_ms[0], rdi.btrack_vel_ms[1],
         rdi.btrack_vel_ms[2], rdi.btrack_vel_ms[3],
         rdi.heading, rdi.pitch, rdi.roll,
-        THETA_DEG, gimbaled=False, beams_up=False,
+        THETA_DEG, gimbaled=False, beams_up=False, allow_3beam=True,
     )
     bt_u_e, bt_v_e = uvrot(bt_u_e, bt_v_e, -DROT_DEG)
     bvel = np.stack([bt_u_e, bt_v_e, bt_w_e], axis=1)
@@ -274,7 +279,12 @@ def test_inverse_depth_range(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=False, reason="u RMSE ~0.068 m/s vs 0.05 target as of 2026-07-05 (convention fix applied; rotup2down tried, worsens RMSE, not applied); see HANDOVER.md")
+@pytest.mark.xfail(
+    strict=False,
+    reason="u RMSE ~0.058 vs 0.05 target as of 2026-07-10 (after depth fix, "
+    "editing port, sound speed, 3-beam); residual is the 1000-2000 m stratum; "
+    "see HANDOVER.md",
+)
 def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
     """RMS error in u vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
     ds = netCDF4.Dataset(ref_path)
@@ -297,9 +307,12 @@ def test_inverse_u_rmse(inverse_result: InverseResult, ref_path: Path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=False, reason="v RMSE ~0.057 m/s vs 0.05 target as of 2026-07-05 (convention fix applied; rotup2down tried, worsens RMSE, not applied); see HANDOVER.md")
 def test_inverse_v_rmse(inverse_result: InverseResult, ref_path: Path):
-    """RMS error in v vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3)."""
+    """RMS error in v vs LDEO_IX reference must be < 0.05 m/s (bins with nvel >= 3).
+
+    Passing since 2026-07-10 (v RMSE 0.0499): depth-registration fix +
+    outlier/bin-1 editing + sound-speed correction + 3-beam solutions.
+    """
     ds = netCDF4.Dataset(ref_path)
     ref_z = np.array(ds.variables["z"][:])
     ref_v = np.array(ds.variables["v"][:])

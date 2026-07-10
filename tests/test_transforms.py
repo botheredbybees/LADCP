@@ -2,7 +2,12 @@
 
 import numpy as np
 
-from ladcp.transforms.beam2earth import beam2earth, beam2xyz, uvrot
+from ladcp.transforms.beam2earth import (
+    beam2earth,
+    beam2xyz,
+    reconstruct_3beam,
+    uvrot,
+)
 
 THETA = 20.0  # RDI Workhorse 300 kHz
 
@@ -240,3 +245,84 @@ class TestUvrot:
         ur, vr = uvrot(u, v, 45.0)
         assert ur.shape == (5, 10)
         assert vr.shape == (5, 10)
+
+
+# --- reconstruct_3beam (loadrdi.m b2earth lines 1713-1726) ---
+
+
+class TestReconstruct3Beam:
+    def _beams(self):
+        # b1+b2-b3-b4 = 0 by construction (zero error velocity), so the
+        # reconstruction is exact for these cells.
+        b1 = np.array([[0.30, 0.10]])
+        b2 = np.array([[0.20, 0.40]])
+        b3 = np.array([[0.25, 0.35]])
+        b4 = np.array([[0.25, 0.15]])
+        return b1, b2, b3, b4
+
+    def test_each_missing_beam_reconstructed_exactly(self):
+        for missing in range(4):
+            beams = [b.copy() for b in self._beams()]
+            truth = beams[missing][0, 0]
+            beams[missing][0, 0] = np.nan
+            r, n3 = reconstruct_3beam(*beams)
+            assert n3 == 1
+            assert abs(r[missing][0, 0] - truth) < 1e-12
+            # untouched cell intact
+            assert r[missing][0, 1] == self._beams()[missing][0, 1]
+
+    def test_two_missing_beams_stay_nan(self):
+        b1, b2, b3, b4 = (b.copy() for b in self._beams())
+        b1[0, 0] = np.nan
+        b2[0, 0] = np.nan
+        r, n3 = reconstruct_3beam(b1, b2, b3, b4)
+        assert n3 == 0
+        assert np.isnan(r[0][0, 0]) and np.isnan(r[1][0, 0])
+
+    def test_all_finite_untouched(self):
+        beams = self._beams()
+        r, n3 = reconstruct_3beam(*beams)
+        assert n3 == 0
+        for orig, out in zip(beams, r):
+            np.testing.assert_array_equal(orig, out)
+
+    def test_inputs_not_mutated(self):
+        beams = [b.copy() for b in self._beams()]
+        beams[0][0, 0] = np.nan
+        b1_orig = beams[0].copy()
+        reconstruct_3beam(*beams)
+        np.testing.assert_array_equal(beams[0], b1_orig)
+
+    def test_reconstructed_cell_has_zero_error_velocity(self):
+        # loadrdi.m asserts |VE| < 1e-9 for reconstructed cells.
+        beams = [b.copy() for b in self._beams()]
+        beams[2][0, 1] = np.nan
+        r, _ = reconstruct_3beam(*beams)
+        ve = r[0][0, 1] + r[1][0, 1] - r[2][0, 1] - r[3][0, 1]
+        assert abs(ve) < 1e-12
+
+
+class TestBeam2EarthAllow3Beam:
+    def test_allow_3beam_fills_single_missing_beam(self):
+        nbin, nens = 3, 5
+        rng = np.random.default_rng(3)
+        b1, b2, b3 = (rng.normal(0, 0.3, (nbin, nens)) for _ in range(3))
+        b4 = b1 + b2 - b3  # zero error velocity everywhere
+        h = np.zeros(nens)
+        p = np.zeros(nens)
+        r = np.zeros(nens)
+        u_full, v_full, w_full = beam2earth(
+            b1, b2, b3, b4, h, p, r, 20.0, gimbaled=False
+        )
+        b3_gap = b3.copy()
+        b3_gap[1, 2] = np.nan
+        u3, v3, w3 = beam2earth(
+            b1, b2, b3_gap, b4, h, p, r, 20.0, gimbaled=False, allow_3beam=True
+        )
+        np.testing.assert_allclose(u3, u_full, atol=1e-12)
+        np.testing.assert_allclose(w3, w_full, atol=1e-12)
+        # without the flag the cell is NaN (existing behavior preserved)
+        u0, _, _ = beam2earth(
+            b1, b2, b3_gap, b4, h, p, r, 20.0, gimbaled=False
+        )
+        assert np.isnan(u0[1, 2])

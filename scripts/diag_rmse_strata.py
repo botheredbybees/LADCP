@@ -75,8 +75,10 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
         ul_kw = dict(gimbaled=True, beams_up=True)
         ul_pitch = -rdi_ul.pitch
     else:
-        dl_kw = dict(gimbaled=False, beams_up=False)
-        ul_kw = dict(gimbaled=False, beams_up=True)
+        # allow_3beam: loadrdi.m p.allow_3beam_solutions defaults ON (this
+        # cast: 14422 DL / 8473 UL 3-beam solutions in LDEO's log).
+        dl_kw = dict(gimbaled=False, beams_up=False, allow_3beam=True)
+        ul_kw = dict(gimbaled=False, beams_up=True, allow_3beam=True)
         ul_pitch = rdi_ul.pitch
 
     u_dl, v_dl, w_dl = beam2earth(

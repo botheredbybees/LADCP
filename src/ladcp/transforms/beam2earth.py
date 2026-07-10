@@ -68,6 +68,45 @@ def beam2xyz(
     return Vx, Vy, Vz
 
 
+def reconstruct_3beam(
+    b1: np.ndarray,
+    b2: np.ndarray,
+    b3: np.ndarray,
+    b4: np.ndarray,
+) -> tuple[list[np.ndarray], int]:
+    """Fill cells where exactly ONE beam is NaN by assuming zero error velocity.
+
+    Port of loadrdi.m::b2earth lines 1713-1726 (p.allow_3beam_solutions,
+    default on). The Janus error velocity is proportional to b1+b2-b3-b4;
+    setting it to zero solves for the single missing beam:
+
+        b1 = -b2 + b3 + b4        b3 = b1 + b2 - b4
+        b2 = -b1 + b3 + b4        b4 = b1 + b2 - b3
+
+    (identical for both beam orientations — the VE row of the matrix does
+    not change sign with beams_up). Cells with 0 or >=2 missing beams are
+    left untouched. Returns ([b1, b2, b3, b4] copies, n_3beam_cells).
+    """
+    beams = [np.asarray(b, dtype=np.float64).copy() for b in (b1, b2, b3, b4)]
+    nan_mask = [np.isnan(b) for b in beams]
+    n_missing = sum(m.astype(np.int8) for m in nan_mask)
+    single = n_missing == 1
+    n_3beam = int(single.sum())
+    if n_3beam == 0:
+        return beams, 0
+    signs = {0: (-1, 1, 1), 1: (-1, 1, 1), 2: (1, 1, -1), 3: (1, 1, -1)}
+    for i in range(4):
+        fill = single & nan_mask[i]
+        if not fill.any():
+            continue
+        others = [beams[j] for j in range(4) if j != i]
+        s = signs[i]
+        beams[i][fill] = (
+            s[0] * others[0][fill] + s[1] * others[1][fill] + s[2] * others[2][fill]
+        )
+    return beams, n_3beam
+
+
 def beam2earth(
     b1: np.ndarray,
     b2: np.ndarray,
@@ -79,6 +118,7 @@ def beam2earth(
     theta_deg: float,
     gimbaled: bool = True,
     beams_up: bool = False,
+    allow_3beam: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert 4-beam Janus velocities to Earth frame (u=East, v=North, w=Up).
 
@@ -107,12 +147,20 @@ def beam2earth(
         False (default) for a down-looking instrument; True for up-looking.
         Selects the beam-to-instrument matrix (see beam2xyz).  Matches the
         fixed-leader sysconfig up/down bit (``RDIData.beams_up``).
+    allow_3beam : bool
+        If True, cells with exactly one NaN beam are first reconstructed by
+        assuming zero error velocity (see reconstruct_3beam; loadrdi.m's
+        p.allow_3beam_solutions, default ON in LDEO_IX).  Default False here
+        to preserve existing caller behavior — the P16N pipeline passes True.
 
     Returns
     -------
     u, v, w : ndarray, shape (nbin, nens)
         Earth-frame velocity components m/s: East, North, Up.
     """
+    if allow_3beam:
+        (b1, b2, b3, b4), _ = reconstruct_3beam(b1, b2, b3, b4)
+
     h = np.radians(heading)
     p = np.radians(pitch)
     r = np.radians(roll)
