@@ -9,7 +9,6 @@ from ladcp.transforms.soundspeed import (
     sound_speed,
 )
 
-
 # --- sound_speed (sounds.m / Chen & Millero 1977, UNESCO 44) ---
 
 
@@ -52,7 +51,8 @@ def _make_ens(n_ul: int = 2, n_dl: int = 2, n_ens: int = 4) -> EnsembleData:
     n_bins = n_ul + n_dl
     z = np.full(n_ens, -1000.0)
     # izm = z + signed bin offsets: UL rows above instrument, DL rows below
-    offsets = np.array([16.0, 8.0, -8.0, -16.0])  # rows: UL far, UL near, DL near, DL far
+    # rows: UL far, UL near, DL near, DL far
+    offsets = np.array([16.0, 8.0, -8.0, -16.0])
     izm = z[np.newaxis, :] + offsets[:, np.newaxis]
     return EnsembleData(
         u=np.full((n_bins, n_ens), 0.5),
