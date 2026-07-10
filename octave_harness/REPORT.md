@@ -592,6 +592,71 @@ from `test_inverse_v_rmse`; it is now a hard assertion).
    - LDEO's step-11 lanarrow super-ensemble outlier trimming
      (documented simplification in run_pipeline, currently skipped).
 
+## P5 — Stage A closed (session 2026-07-11)
+
+Three fixes this session, found by localization-before-porting
+(`octave_harness/diag_stage_a_residual.py`: per-row breakdown showed DL
+rows already rms 0.0000, the entire velocity residual in the UL rows, and
+a one-sided weight mask asymmetry):
+
+1. **UL→DL ensemble pairing** (commit `f192477`): loadrdi.m refines its
+   nearest-time UL merge with bestlag on w ("shift ADCP timeseries by 1
+   ensembles") — the UL clock is ~0.6 s off the DL clock with staggered
+   1.33/1.58 s pinging, so nearest-recorded-time picks the wrong
+   neighbor. The shift is a SEQUENCE shift (`iu = iu(iiu)`, i.e.
+   `ul_idx[k−1]`), not a value shift (`ul_idx[k]−1`): staggered pinging
+   makes the nearest-time index jump by 0 or 2 in ~20% of columns and
+   only the sequence form reproduces Octave there (heading fingerprint:
+   100.0% exact match vs 78%). New `best_ul_shift()` in
+   `ladcp.ingestion.rdi` (min-corr 0.9 fallback to nearest-time).
+2. **Weight construction** (commit `2e3549c`): `build_ldeo_weights()`
+   ports loadrdi.m 408-533 — median-over-beams correlation normalized by
+   medianan(maxnan(.)), tilt/tilt-derivative ensemble masking, the
+   echo-amplitude penalty, non-pinging removal (replicating the
+   loadrdi.m:478 dru-twice bug), weighbin1 hook.
+3. (Also this session, commit `472571e` docs elsewhere: 3-beam had landed
+   the day before; this section's baseline includes it.)
+
+**Result: every Stage A field is NEAR.**
+
+| Stage A field | rms before (2026-07-10) | rms after |
+|---|---|---|
+| ru / rv | 0.085 / 0.083 | **3.7e-6 / 3.9e-6** |
+| rw | 0.101 | **2.1e-5** |
+| weight | 0.151 | **0.0020** |
+| izm | 0.36–0.89 m (sub-bin) | 0.89 m (sub-bin) |
+
+The Python pipeline through editing (ingestion → beam2earth/3-beam →
+sound speed → outlier/sidelobe/large-vel/w-outlier/bin-mask editing →
+weights) is now **numerically equivalent to LDEO_IX** on this cast.
+
+**Remaining divergence is isolated to super-ensemble formation.** Stage C
+(ru rms 0.0965 / rv 0.1016) and Stage D (u 0.0762 / v 0.0569) did not
+move despite identical Stage A inputs, and P3 already exonerated the
+solver given identical `di` — so `prepare_superensembles()` vs
+`prepinv.m` is the last differing stage. Archive RMSE unchanged by the
+weight fix (u 0.0565 / v 0.0519; v slipped back over the 0.05 target with
+the pairing fix — its xfail is restored, non-strict).
+
+**What the next session should investigate (P5 handoff):**
+1. Diff `prepare_superensembles()` against `prepinv.m` (steps 10-12)
+   line-by-line, prioritizing: per-super-ensemble reference-velocity
+   subtraction (medianan of 4 bins — partially ported as _ref_medianan),
+   prepinv's own outlier discards ("Outlier discarded 197/506 bins" in
+   step10 log), tilt-based weight reduction ("reduce weight for larger
+   tilts 0.5 at 10 degree"), super-ensemble std flooring ("set 1360
+   values to minimum super ensemble std"), and the two-pass step10/
+   step11(lanarrow)/step12 structure (lanarrow currently skipped as a
+   documented simplification).
+2. The solver-only technique applies one stage earlier: feed Octave's
+   step09 `d` into `prepare_superensembles()` and diff against step12
+   `di` — any residual is then purely formation logic, no input
+   ambiguity. (Stage A parity makes this equivalent to using Python's own
+   post_edit, but the dump-driven form pins the comparison.)
+3. Consider whether the Stage C comparison's depth-tolerance pairing
+   still drops 156/828 super-ensembles — with formation logic aligned,
+   the bin centers should coincide and kept-pairs should approach 828.
+
 ## P2 — stage-diff rerun with corrected methodology (session 2026-07-06)
 
 Methodology changes vs 2026-07-05: **masking-policy branch applied** (P1's

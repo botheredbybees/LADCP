@@ -1,10 +1,14 @@
 # Handover: P16N Cast 003 RMSE Closure
 
-**Date**: 2026-07-10
-**Status**: izm depth-registration offset root-caused and FIXED; editing,
-sound-speed, and 3-beam ports done. **v RMSE target (< 0.05 m/s) MET
-(0.0499, xfail removed).** u at 0.0584 vs 0.05 target — remaining gap is
-the 1000–2000 m stratum plus residual Stage A mask-policy differences.
+**Date**: 2026-07-11
+**Status**: **Stage A is CLOSED** — the Python pipeline through editing
+(ingestion, transforms + 3-beam, sound speed, all editors, weights) is
+numerically equivalent to LDEO_IX on P16N 003 (velocities to ~4e-6 m/s
+rms, weight to 0.002). The one remaining differing stage is
+super-ensemble formation (`prepare_superensembles` vs `prepinv.m`).
+Archive RMSE: u 0.0565 / v 0.0519 vs the 0.05 target (both xfail,
+non-strict; v was briefly 0.0499 on 2026-07-10 before the pairing fix
+re-registered the UL data).
 
 ## Session history (one line each; details in `octave_harness/REPORT.md`)
 
@@ -34,18 +38,28 @@ Third milestone: **sound-speed correction ported** (commit `d70e10f`,
 Fourth milestone: **3-beam solutions** (commit `472571e`,
 `reconstruct_3beam()` + `beam2earth(allow_3beam=True)`): single-missing-
 beam cells reconstructed via zero error velocity, applied to DL/UL/BT.
-**v RMSE 0.0499 < 0.05 — first validation target met**; xfail removed.
 
-## Current state after the P4 fix + editing port
+**2026-07-11 session — Stage A closed (see REPORT.md P5):**
+- **UL→DL pairing** (`f192477`): `best_ul_shift()` ports loadrdi.m's
+  bestlag merge refinement as a SEQUENCE shift (`ul_idx[k−1]`, not
+  `ul_idx[k]−1` — staggered pinging makes the difference in ~20% of
+  columns; heading fingerprint: 100.0% exact). Stage A velocities
+  0.085 → **3.7e-6** rms.
+- **Weight construction** (`2e3549c`): `build_ldeo_weights()` ports
+  loadrdi.m 408-533 (median-over-beams corr, medianan(maxnan) norm,
+  tilt/tiltd masking, echo penalty, non-pinging removal incl. the
+  dru-twice bug). Weight rms 0.151 → **0.0020**.
 
-- izm vs Octave step09: rms 47.9 m → 1.55 m (depth fix) → **0.36 m**
-  (sound-speed bin-offset scaling); max 108.8 → 2.3 m. Depth registration
-  is closed.
-- Stage A ru rms vs Octave: 0.215 → 0.117 (ping-pairing fix) → **0.080**
-  (editing port); max|diff| 14.3 → **3.0 m/s**.
-- Stage D vs Octave harness: u rms 0.093 → **0.078**, v 0.063 → **0.062**.
-- Full suite: **224 passed, 8 skipped, 1 xfailed** (only the u RMSE
-  check remains xfail; v passes as a hard assertion).
+## Current state (2026-07-11)
+
+- **Stage A: all fields NEAR vs Octave step09** — ru/rv 3.7e-6/3.9e-6,
+  rw 2.1e-5, weight 0.0020, izm 0.89 m (sub-bin).
+- Stage C (super-ensembles): ru 0.0965 / rv 0.1016 — the sole remaining
+  divergence, isolated to `prepare_superensembles()` vs `prepinv.m`
+  (identical inputs, solver exonerated by P3).
+- Stage D vs Octave harness: u 0.0762 / v 0.0569.
+- Full suite: **232 passed, 8 skipped, 2 xfailed** (u and v archive-RMSE
+  checks, both non-strict).
 
 ## Current numbers (`scripts/diag_rmse_strata.py`, NEW config, 2026-07-10,
 after depth fix + editing port + sound-speed correction)
@@ -79,17 +93,17 @@ The honest first divergence is Stage A velocities, now down to rms ~0.08
 m/s on both-finite cells, max|diff| ~3 m/s. See REPORT.md's updated "P4
 handoff" for detail:
 
-u gap to target: 0.0584 vs 0.05 (v is met). See REPORT.md "P4 handoff"
-for the full list; in order of expected leverage:
+One target left: super-ensemble formation. See REPORT.md "P5 handoff":
 
-1. Remaining mask-policy differences (4.4% mask_disagree; Octave masks
-   the instrument-nearest bin rows 24–25 far more aggressively — P1b).
-2. Localize the residual Stage A both-finite rms (~0.085) per-row/
-   per-depth before hypothesizing further.
-3. Deep stratum u (0.0608) — if it resists, verify bottom-track `sc`
-   vs `getdpthi.m:188-197` and the BT 3-beam path.
-4. LDEO's step-11 lanarrow super-ensemble trimming (documented
-   simplification, currently skipped).
+1. Diff `prepare_superensembles()` against `prepinv.m` steps 10-12
+   (reference-velocity subtraction, prepinv's outlier discards,
+   tilt-based weight reduction, SE-std flooring, the step10/11/12
+   two-pass + lanarrow structure).
+2. Dump-driven formation test: feed Octave step09 `d` into
+   `prepare_superensembles()`, diff against step12 `di` — pure formation
+   logic, no input ambiguity.
+3. With formation aligned, Stage C pairing should keep ~828/828
+   super-ensembles (currently 672).
 
 ## rotup2down: implemented, tested, does not help — not committed
 
@@ -116,4 +130,7 @@ lines 294–418 if ever needed.)
 | `tests/test_soundspeed.py` | Unit tests incl. Octave-measured sounds.m parity value |
 | `src/ladcp/transforms/beam2earth.py` | `reconstruct_3beam()`, `beam2earth(allow_3beam=...)` |
 | `tests/test_transforms.py` | 3-beam reconstruction unit tests |
+| `src/ladcp/ingestion/rdi.py` | `best_ul_shift()` (loadrdi UL merge bestlag, sequence semantics) |
+| `src/ladcp/qa/editing.py` | + `build_ldeo_weights()` (loadrdi weight construction) |
+| `octave_harness/diag_stage_a_residual.py` | New: per-row/per-phase/weight localization + UL shift scan |
 | `HANDOVER.md` | This file — rewritten |
