@@ -18,7 +18,7 @@ import netCDF4
 import numpy as np
 import pytest
 
-from ladcp.ingestion.ctd import assign_bin_depths, load_ctd
+from ladcp.ingestion.ctd import assign_bin_depths, estimate_ctd_adcp_lag, load_ctd
 from ladcp.ingestion.rdi import load_rdi
 from ladcp.solution.inverse import EnsembleData, InverseResult, compute_inverse, prepare_superensembles
 from ladcp.transforms.beam2earth import beam2earth, uvrot
@@ -91,7 +91,22 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     # East magnetic declination is a CW heading shift, so we pass -DROT_DEG.
     u_dl, v_dl = uvrot(u_dl, v_dl, -DROT_DEG)
 
-    z_m, izm_dl_pos = assign_bin_depths(rdi, ctd, looker="down")
+    # Latitude for the Saunders pressure->depth conversion (loadctd.m::p2z);
+    # without it assign_bin_depths falls back to z = p*1.00445, which reads
+    # ~90 m too deep at this cast's bottom (~4400 dbar).
+    _ds = netCDF4.Dataset(ref_path)
+    lat_deg = float(_ds.variables["lat"][:])
+    _ds.close()
+
+    # CTD-ADCP clock offset (loadctd.m besttlag equivalent): sample the CTD
+    # pressure at ADCP time + lagdt.  Measured -0.5 s on this cast.
+    _, lagdt_days, _ = estimate_ctd_adcp_lag(
+        rdi.time_julian, np.nanmedian(w_dl, axis=0), ctd, lat_deg=lat_deg,
+    )
+
+    z_m, izm_dl_pos = assign_bin_depths(
+        rdi, ctd, looker="down", lat_deg=lat_deg, time_offset_days=lagdt_days,
+    )
     z_neg = -z_m
     weight_dl = np.nanmean(rdi.corr.astype(np.float64), axis=2) / 128.0
 
@@ -108,7 +123,9 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     u_ul, v_ul = uvrot(u_ul, v_ul, -DROT_DEG)
 
     # Bin depths for UL: bins extend above instrument (looker="up").
-    _, izm_ul_pos = assign_bin_depths(rdi_ul, ctd, looker="up")
+    _, izm_ul_pos = assign_bin_depths(
+        rdi_ul, ctd, looker="up", lat_deg=lat_deg, time_offset_days=lagdt_days,
+    )
     weight_ul = np.nanmean(rdi_ul.corr.astype(np.float64), axis=2) / 128.0
 
     # Time-align UL to DL: for each DL ensemble find the nearest UL ensemble.
@@ -181,7 +198,7 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     ens = EnsembleData(
         u=u_comb, v=v_comb, w=w_comb, weight=weight_comb,
         izm=izm_comb, z=z_neg,
-        time_jul=rdi.time_julian,
+        time_jul=rdi.time_julian + lagdt_days,
         bvel=bvel, bvels=bvels, hbot=hbot,
         izd=izd, izu=izu,
         slat=slat, slon=slon,

@@ -21,7 +21,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ladcp.ingestion.ctd import assign_bin_depths, load_ctd  # noqa: E402
+from ladcp.ingestion.ctd import (  # noqa: E402
+    assign_bin_depths,
+    estimate_ctd_adcp_lag,
+    load_ctd,
+)
 from ladcp.ingestion.rdi import load_rdi  # noqa: E402
 from ladcp.qa.editing import (  # noqa: E402
     edit_large_velocities,
@@ -50,6 +54,15 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
     rdi_ul = load_rdi(data_dir / "003UL000.000")
     ctd = load_ctd(data_dir / "003_01.cnv")
 
+    ds = netCDF4.Dataset(data_dir / "003.nc")
+    lat_deg = float(ds.variables["lat"][:])
+    u_ship, v_ship = float(ds.uship), float(ds.vship)
+    ref_z = np.array(ds.variables["z"][:])
+    ref_u = np.array(ds.variables["u"][:])
+    ref_v = np.array(ds.variables["v"][:])
+    ref_nvel = np.array(ds.variables["nvel"][:])
+    ds.close()
+
     if legacy:
         dl_kw = dict(gimbaled=True, beams_up=True)  # old up-matrix for DL too
         ul_kw = dict(gimbaled=True, beams_up=True)
@@ -64,7 +77,16 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
         rdi.heading, rdi.pitch, rdi.roll, THETA_DEG, **dl_kw,
     )
     u_dl, v_dl = uvrot(u_dl, v_dl, -DROT_DEG)
-    z_m, izm_dl_pos = assign_bin_depths(rdi, ctd, looker="down")
+    # CTD-ADCP clock offset (loadctd.m besttlag): correlate the CTD's
+    # pressure-derived sinking rate against ADCP earth-frame w, then sample
+    # pressure at the corrected time and shift the ADCP time labels to the
+    # CTD time frame (loadctd.m lines 410-443).
+    lag_scans, lagdt_days, lag_corr = estimate_ctd_adcp_lag(
+        rdi.time_julian, np.nanmedian(w_dl, axis=0), ctd, lat_deg=lat_deg,
+    )
+    z_m, izm_dl_pos = assign_bin_depths(
+        rdi, ctd, looker="down", lat_deg=lat_deg, time_offset_days=lagdt_days,
+    )
     weight_dl = np.nanmean(rdi.corr.astype(np.float64), axis=2) / 128.0
 
     u_ul, v_ul, w_ul = beam2earth(
@@ -72,7 +94,9 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
         rdi_ul.heading, ul_pitch, rdi_ul.roll, THETA_DEG, **ul_kw,
     )
     u_ul, v_ul = uvrot(u_ul, v_ul, -DROT_DEG)
-    _, izm_ul_pos = assign_bin_depths(rdi_ul, ctd, looker="up")
+    _, izm_ul_pos = assign_bin_depths(
+        rdi_ul, ctd, looker="up", lat_deg=lat_deg, time_offset_days=lagdt_days,
+    )
     weight_ul = np.nanmean(rdi_ul.corr.astype(np.float64), axis=2) / 128.0
 
     ul_idx = np.argmin(
@@ -95,20 +119,12 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
     bt_u, bt_v = uvrot(bt_u, bt_v, -DROT_DEG)
     bvel = np.stack([bt_u, bt_v, bt_w], axis=1)
 
-    ds = netCDF4.Dataset(data_dir / "003.nc")
-    u_ship, v_ship = float(ds.uship), float(ds.vship)
-    ref_z = np.array(ds.variables["z"][:])
-    ref_u = np.array(ds.variables["u"][:])
-    ref_v = np.array(ds.variables["v"][:])
-    ref_nvel = np.array(ds.variables["nvel"][:])
-    ds.close()
-
     sadcp = data_dir / "sadcp_003.npz"
     npz = np.load(sadcp) if sadcp.exists() else None
 
     ens = EnsembleData(
         u=u_comb, v=v_comb, w=w_comb, weight=weight_comb,
-        izm=izm_comb, z=-z_m, time_jul=rdi.time_julian,
+        izm=izm_comb, z=-z_m, time_jul=rdi.time_julian + lagdt_days,
         bvel=bvel, bvels=np.full_like(bvel, 0.02),
         hbot=np.nanmean(rdi.btrack_range_m, axis=0),
         izd=izd, izu=izu,
