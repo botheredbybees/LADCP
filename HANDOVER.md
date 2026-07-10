@@ -1,96 +1,91 @@
 # Handover: P16N Cast 003 RMSE Closure
 
-**Date**: 2026-07-05
-**Status**: Transform-convention bug found and fixed; medianan fix retained; rotup2down
-tried and rejected (worsens RMSE). RMSE target (< 0.05 m/s) not yet met — remaining gap
-not yet root-caused.
+**Date**: 2026-07-10
+**Status**: izm depth-registration offset root-caused and FIXED (see below).
+RMSE target (< 0.05 m/s) not yet met; the remaining gap is now cleanly
+attributed to Stage A editing/masking differences (the last unexplained
+divergence stage).
 
-**2026-07-06 session:** solver-only harness + stage-diff methodology fixes
-executed — see `octave_harness/REPORT.md` sections P3/P1/P2 for the verdict
-on where the Python pipeline diverges from LDEO_IX. Headline: the solver is
-exonerated (Python `compute_inverse()` vs Octave `getinv.m` agree to
-u/v RMSE ~0.01 m/s given identical input), and the new lead is a
-depth-varying `izm` (bin-depth-assignment) offset between the two
-pipelines — mean +34.2 m, growing to 108.8 m max, correlated (r=-0.80) with
-cast depth — found upstream of the solver at Stage A/C and now the prime
-suspect for the remaining ~0.09 m/s (u) full-pipeline gap. See
-`octave_harness/REPORT.md`'s "What the next session should investigate"
-for the concrete next measurement (comparing `assign_bin_depths()` vs
-`getdpthi.m`).
+## Session history (one line each; details in `octave_harness/REPORT.md`)
 
-## Current numbers (`scripts/diag_rmse_strata.py`, convention fix applied, no rotup2down)
+- **2026-07-05**: transform-convention fix (`f3569c4`, UL beam matrix);
+  rotup2down tried and rejected; Octave differential harness built (M1-M4).
+- **2026-07-06**: solver exonerated (P3: Python `compute_inverse()` vs Octave
+  `getinv.m` agree to ~0.01 m/s on identical input); first-DIVERGES = Stage A;
+  depth-varying izm offset quantified (P2).
+- **2026-07-10**: izm offset root-caused and fixed (P4). Two mechanisms:
+  (1) no caller passed `lat_deg`, so `assign_bin_depths()` used the crude
+  `z = p*1.00445` fallback instead of Saunders/`p2z` — ~90 m too deep at the
+  cast bottom; (2) Octave shifts its ADCP time labels by its besttlag lagdt
+  (−23.24 s), which mispaired the harness comparison by exactly 16 pings
+  (staggered ping-cycle aliasing — this had fooled P1's time-mismatch check).
+  The physical CTD-ADCP clock offset in Python's data is only −0.5 s,
+  measured by the new `estimate_ctd_adcp_lag()`.
+
+## Current state after the P4 fix
+
+- izm vs Octave step09: rms 47.9 m → **1.55 m** (mean +0.02 m, no depth
+  correlation). Residual max 7.2 m ≈ the sound-speed bin-length scaling
+  Python doesn't yet apply.
+- Stage A ru rms vs Octave: 0.215 → **0.117** m/s (the 16-ping mispairing
+  was a large chunk of the "unresolved" P1 residual).
+- Full suite: **203 passed, 8 skipped, 2 xfailed** (the two RMSE checks).
+
+## Current numbers (`scripts/diag_rmse_strata.py`, NEW config, 2026-07-10)
 
 | stratum | n | u RMSE | v RMSE | r(u) |
 |---|---|---|---|---|
-| TOTAL | 520 | 0.0678 | 0.0573 | +0.483 |
-| 0–1000 m | 120 | 0.0142 | 0.0195 | +0.970 |
-| 1000–2000 m | 121 | 0.1034 | 0.0352 | +0.748 |
-| 2000–3000 m | 122 | 0.0463 | 0.0735 | +0.576 |
-| 3000–4500 m | 157 | 0.0720 | 0.0737 | +0.014 |
+| TOTAL | 520 | 0.0848 | 0.0595 | +0.343 |
+| 0–1000 m | 120 | 0.0138 | 0.0179 | +0.973 |
+| 1000–2000 m | 121 | 0.1540 | 0.0447 | +0.750 |
+| 2000–3000 m | 122 | 0.0644 | 0.0916 | +0.343 |
+| 3000–4500 m | 157 | 0.0464 | 0.0586 | +0.416 |
 
-Full test suite (`TEST_DATA_DIR=test_data uv run python -m pytest`): 190 passed, 8
-skipped, 2 xfailed (the two RMSE checks in
-`tests/integration/test_inverse_p16n_cast003.py`).
+**Note the u TOTAL moved 0.0678 → 0.0848 despite the fix being verifiably
+correct** (validated against p2z's check value and against Octave's own z to
+1.55 m rms). The old, better-looking total was partly error cancellation:
+wrong depth registration (+90 m at depth) happened to partially compensate
+the Stage A velocity-structure difference in 1000–2000 m. Deep water
+(3000–4500 m) — where velocity structure is weak and depth registration
+dominates — improved as predicted (0.0720 → 0.0464). Do not "fix" the RMSE
+by reverting the depth conversion.
 
-**Note on running tests on this machine**: `uv run pytest` fails with `uv trampoline
-failed to canonicalize script path` (broken entry-point shim). Use
-`uv run python -m pytest` instead — that works.
+**Note on running tests on this machine**: `uv run pytest` fails with a
+broken entry-point shim. Use `TEST_DATA_DIR=test_data uv run python -m
+pytest` instead.
 
-## What was previously wrong, and what actually fixed it
+## Remaining work to close the RMSE gap (priority order)
 
-The ~87–90° DL/UL heading disagreement seen throughout this cast was **not** a
-compass fault on either instrument. It was a Python `beam2earth` transform-convention
-bug: the uplooker needs a different beam→instrument sign convention than the
-downlooker (see `loadrdi.m::b2earth`'s `beams_up`-dependent matrix), and our
-implementation wasn't applying it. See `VALIDATION_PLAN.md` for the full evidence
-trail that led to this reframe (the previously-proposed "hardcode +87° onto UL
-heading" fix, `HANDOVER.md`'s old "Option A", was retired — it would have baked a
-cast-specific mounting angle into the pipeline).
+The honest first divergence is now Stage A velocities (rms ~0.12 m/s on
+both-finite cells, max|diff| 14 m/s from Python-side unmasked garbage).
+See REPORT.md P4 handoff for detail:
 
-Fixed in commit `f3569c4`. `scripts/diag_ul_dl_rotation.py` (the E1 diagnostic)
-confirms the residual UL→DL rotation after the fix is noise-dominated around 0°
-(not a coherent 87–90° bias): circ mean −8°, downcast +5°, upcast −35°, correlation
-with heading/cast-phase near zero, model fit rho ~0.1–0.2 (i.e., the "rotation" model
-barely explains the data — it's noise, not a systematic offset).
-
-The separately-applied `_ref_medianan()` fix (MATLAB `medianan` vs `np.nanmedian` for
-4-bin reference subtraction) is unrelated and still correctly in place.
+1. **Port the missing editing steps**: `loadrdi.m::outlier()` (ingestion-
+   time outlier rejection; the Octave log shows it discarding ~6952 DL /
+   4338 UL bins) and `edit_data.m`'s bin-1 masking ("zero blanking
+   distance"). These remove exactly the garbage cells dominating Stage A.
+2. **Sound-speed corrections**: velocity scaling `ss/sv`
+   (`getdpthi.m:182-207`) and bin-length scaling for izm
+   (`getdpthi.m:428-439`).
+3. Re-measure `diff_stages.py` and `diag_rmse_strata.py` after 1–2.
 
 ## rotup2down: implemented, tested, does not help — not committed
 
-A faithful port of `prepinv.m`'s `rotup2down=1` (harmonize per-ensemble DL/UL heading
-fluctuation, after removing the cast-mean offset) is written, unit-tested, and was
-wired into the integration test and `diag_rmse_strata.py`. Measured effect: TOTAL u
-RMSE goes from 0.0678 to 0.0755 (worse), and the previously-excellent 0–1000 m
-stratum degrades most (u RMSE 0.0142 → 0.0327). A sign-bug was ruled out by swapping
-the DL/UL rotation directions and re-measuring (0.0754 — same degradation either way;
-a real physical-misalignment correction would instead swing the other direction when
-flipped). Conclusion: the per-ensemble heading residual here (mean 0.7°, std 7.3°) is
-most likely per-instrument compass jitter, not a real mechanical flex between the
-frames — applying the correction injects that jitter into u/v.
+(Unchanged from 2026-07-05; see PROGRAMMERS_NOTES.md "Validation: P16N Cast
+003". NOTE: the git stash holding the implementation is **gone** — the
+stash list is empty as of 2026-07-10. Reconstruct from
+PROGRAMMERS_NOTES.md's line-by-line convention notes against `prepinv.m`
+lines 294–418 if ever needed.)
 
-**The implementation is in `git stash` (not the working tree, not committed).** Run
-`git stash list` / `git stash show -p` to recover it if a future cast or instrument
-pair shows a genuine per-ensemble heading disagreement worth correcting. See
-`PROGRAMMERS_NOTES.md`'s "Validation: P16N Cast 003" section for full detail and the
-line-by-line convention verification against `prepinv.m` lines 294–418.
-
-## Remaining work to close the RMSE gap
-
-The 1000–2000 m stratum (u RMSE 0.10) is now the largest single contributor to the
-TOTAL RMSE gap, and its cause is **not yet identified** — it survived both the
-medianan fix and the transform-convention fix, and rotup2down does not close it.
-
-Recommended next step: `VALIDATION_PLAN.md` Phase 2 — stop debugging via the
-single end-to-end RMSE number (it conflates ingestion/transform/solver stages) and
-build the solver-only harness (feed LDEO's own S4P `001/002/003.nc` GPS/CTD/SADCP/BT
-inputs directly into `prepare_superensembles()`/`compute_inverse()`, compare to
-LDEO's own output in the same file) to isolate whether the remaining gap is in the
-solver or upstream of it.
-
-## Files changed this session (2026-07-05)
+## Files changed this session (2026-07-10)
 
 | File | Change |
 |---|---|
-| `PROGRAMMERS_NOTES.md` | Updated validation section with current RMSE numbers, corrected the "compass offset" root-cause framing, documented rotup2down attempt and rejection |
-| `HANDOVER.md` | This file — full rewrite to reflect current state |
+| `src/ladcp/ingestion/ctd.py` | `pressure_to_depth()` (Saunders p2z port), `estimate_ctd_adcp_lag()` (besttlag equivalent), `assign_bin_depths(time_offset_days=...)` |
+| `tests/test_ctd_loader.py` | Unit tests: p2z check value, lat branch, time offset, synthetic lag recovery |
+| `scripts/diag_rmse_strata.py` | run_pipeline passes lat_deg + measured lag; time labels shifted like loadctd.m:443 |
+| `tests/integration/test_inverse_p16n_cast003.py` | Same wiring as run_pipeline |
+| `octave_harness/diag_izm_root_cause.py` | New: variant test A/B/C/D/E reproducing and closing the P2 offset |
+| `octave_harness/diff_stages.py` | Stage A undoes Octave's −23.24 s label shift via heading content-match |
+| `octave_harness/REPORT.md` | P4 section + RESOLVED marker on the P2-era priority |
+| `HANDOVER.md` | This file — rewritten |

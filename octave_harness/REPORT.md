@@ -233,6 +233,11 @@ exonerated (P3), the step-8 pitch/roll hypothesis is dead (P1a), and the
 first genuine DIVERGES stage is Stage A `ru`, driven by a depth-varying
 `izm` (bin-depth-assignment) offset between the two pipelines (P1b/P2).
 
+**[RESOLVED 2026-07-10 — see P4 above. The izm offset was root-caused
+(missing Saunders pressure→depth conversion + Octave-side time-label
+shift) and fixed; do not re-open. The remaining historical text below is
+kept for the evidence trail.]**
+
 **Priority 1 for the next session: find where the depth-varying `izm`
 offset originates.** P2 quantified it precisely — mean +34.2 m, median
 +31.0 m, rms 47.9 m, max 108.8 m, correlation of per-column mean diff with
@@ -461,6 +466,83 @@ Octave's editing chain (loadrdi `outlier()` + `edit_data.m`) removed it.
 (Test suite not run this session: no tracked pipeline code under `src/`
 or `scripts/` was touched — only the diagnostic script
 `diag_stage_a.py` and this report.)
+
+## P4 — izm root cause found and fixed (session 2026-07-10)
+
+**The depth-varying izm offset is root-caused and closed.** Two mechanisms,
+both in `loadctd.m`, both previously absent from Python
+(`octave_harness/diag_izm_root_cause.py` reproduces this end-to-end):
+
+1. **Pressure→depth formula (dominant, the depth-correlated component).**
+   `loadctd.m::p2z` is Saunders & Fofonoff (1976) with the cast latitude
+   (`p.poss(1)` = −15). Python's `assign_bin_depths()` had the same formula
+   in its `lat_deg` branch, but **no caller passed `lat_deg`**, so every run
+   used the fallback `z = p*1.00445` — ~89 m too deep at this cast's
+   ~4400 dbar bottom. Variant test: baseline reproduces P2 exactly (mean
+   +34.2 m, rms 48.0, corr −0.802); switching to Saunders alone gives mean
+   0.03 m, corr 0.004.
+2. **Time registration (the ~±25 m depth-uncorrelated residual).** The
+   remaining variant-B residual correlates 0.95 with descent rate — a pure
+   time offset (fitted τ = +21 s). This is Octave's `loadctd.m` label shift
+   (its besttlag lagdt, measured −23.24 s from the dumps by heading
+   content-match between step03 and step09), NOT a physical correction
+   Python was missing: the physical CTD(cnv)-ADCP clock offset in Python's
+   data is only **−0.5 s** (measured by the new `estimate_ctd_adcp_lag()`,
+   corr 0.96). Octave's ctdtimoff (−23.08 s on CTD time) and lagdt
+   (−23.5 s on ADCP time) mostly cancel physically — both pipelines were
+   already near-correctly registered; their *labels* differ by ~23 s.
+
+**Comparison-methodology consequence (fixed in `diff_stages.py`):** this
+cast's staggered ping pattern (1.33/1.58 s) repeats every 2.91 s, and
+23.24 s ≈ 16 pings almost exactly — so nearest-time matching had been
+pairing ensembles **16 pings apart with only ~13 ms apparent error**. P1's
+"column/time mismatch ruled out (13.4 ms)" was fooled by this. Stage A now
+measures and undoes the label shift via heading content-match.
+
+**Pipeline fixes (commits `5726afa`, `035a475`, `fc60f20`):**
+`pressure_to_depth()` (Saunders, matches p2z's 9712.654 m check value),
+`estimate_ctd_adcp_lag()` (besttlag whole-series equivalent, resamples the
+quantized 24 Hz cnv time base onto a ≥0.5 s grid), `assign_bin_depths()`
+gains `time_offset_days`; `run_pipeline()` + the integration fixture pass
+`lat_deg` and the measured lag and shift `ens.time_jul` like
+`loadctd.m:443`.
+
+**Measured effect (diff_stages.py rerun):**
+
+| metric | before | after |
+|---|---|---|
+| izm rms / mean / corr(depth) | 47.9 m / +34.2 m / −0.80 | **1.55 m / +0.02 m / +0.05** |
+| Stage A ru rms | 0.2146 | **0.1172** |
+| Stage A rv rms | 0.2087 | 0.1250 |
+| Stage A rw rms | 0.4653 | 0.1867 |
+| Stage C ru/rv rms | 0.1118 / 0.1076 | 0.0980 / 0.1013 |
+| Stage D u/v rms | 0.0933 / 0.0630 | 0.1031 / 0.0755 |
+
+izm's residual (max 7.2 m, row-dependent) is consistent with the
+sound-speed bin-length scaling `getdpthi.m:428-439` applies and Python does
+not (yet) — a few metres at far bins.
+
+**End-to-end RMSE vs archived 003.nc moved mixed** (NEW config: u TOTAL
+0.0678 → 0.0848, v 0.0573 → 0.0595; 3000–4500 m u improves 0.0720 → 0.0464,
+1000–2000 m u worsens 0.1034 → 0.1540): with physically-correct depths the
+profile re-registers vertically against the still-open Stage A velocity
+divergence — the old total partially benefited from error cancellation
+between wrong depth registration and wrong velocity structure. The honest
+open problem is now solely the Stage A editing/masking + residual velocity
+difference (rms ~0.12 on both-finite cells; max-diff cells are Python-side
+unmasked garbage, e.g. 14 m/s near-surface values Octave's
+loadrdi-`outlier()`/`edit_data.m` chain removes).
+
+**What the next session should investigate (P4 handoff):**
+1. Port the missing editing steps: `loadrdi.m::outlier()` (per-block
+   outlier rejection at ingestion) and `edit_data.m`'s bin-1 masking
+   ("masking downlooker/uplooker bin 1 because of zero blanking distance"
+   in the step09 log) — these remove exactly the garbage cells that
+   dominate Stage A max|diff| and plausibly much of its rms.
+2. Sound-speed corrections Python lacks: velocity scaling `ss/sv`
+   (`getdpthi.m:182-207`) and bin-length scaling for izm
+   (`getdpthi.m:428-439`, the remaining ±7 m).
+3. Re-measure Stage C/D and archive RMSE after (1)+(2).
 
 ## P2 — stage-diff rerun with corrected methodology (session 2026-07-06)
 
