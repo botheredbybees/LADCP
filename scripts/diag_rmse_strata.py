@@ -29,6 +29,8 @@ from ladcp.ingestion.ctd import (  # noqa: E402
 from ladcp.ingestion.rdi import load_rdi  # noqa: E402
 from ladcp.qa.editing import (  # noqa: E402
     edit_large_velocities,
+    edit_mask_bins,
+    edit_outliers,
     edit_sidelobes,
     edit_w_outliers,
 )
@@ -132,9 +134,17 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
     )
     if stages is not None:
         stages["post_transform"] = ens
+    # loadrdi.m runs outlier() at ingestion, before edit_data.m's masking.
+    ens = edit_outliers(ens)
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
     ens = edit_large_velocities(ens)
     ens = edit_w_outliers(ens)
+    # edit_data.m: mask bin 1 of any instrument with zero blanking distance.
+    ens = edit_mask_bins(
+        ens,
+        dn_bins=[0] if rdi.blnk_m == 0 else [],
+        up_bins=[0] if rdi_ul.blnk_m == 0 else [],
+    )
     if stages is not None:
         stages["post_edit"] = ens
     if rot or offset:

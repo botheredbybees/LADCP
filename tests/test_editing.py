@@ -133,3 +133,100 @@ def test_surface_mask_is_per_ensemble():
     result = edit_sidelobes(ens, theta_deg=20.0, cell_size_m=8.0)
     assert np.isnan(result.weight[0, 0]), "deep-ADCP ensemble: shallow bin is masked"
     assert result.weight[0, 1] == 1.0, "shallow-ADCP ensemble: bin is below limit"
+
+
+# --- edit_outliers (loadrdi.m::outlier port) ---
+
+from ladcp.qa.editing import edit_mask_bins, edit_outliers
+
+
+def _make_ens_outlier(n_ul: int = 3, n_dl: int = 3, n_ens: int = 300, seed: int = 7):
+    """Combined UL+DL ensemble with smooth fields for outlier tests.
+
+    1 s pings -> loadrdi's 5-minute block = 300 ensembles = one block here.
+    """
+    rng = np.random.default_rng(seed)
+    n_bins = n_ul + n_dl
+    t = 2457000.0 + np.arange(n_ens) / 86400.0
+    base = 0.3 + 0.05 * np.sin(np.arange(n_ens) / 40.0)
+    u = base + rng.normal(0, 0.02, (n_bins, n_ens))
+    v = -base + rng.normal(0, 0.02, (n_bins, n_ens))
+    w = 1.0 + rng.normal(0, 0.02, (n_bins, n_ens))
+    ens = EnsembleData(
+        u=u, v=v, w=w,
+        weight=np.ones((n_bins, n_ens)),
+        izm=np.tile(-np.arange(n_bins, dtype=float)[:, None] * 8 - 50, (1, n_ens)),
+        z=np.full(n_ens, -500.0),
+        time_jul=t,
+        bvel=rng.normal(0, 0.02, (n_ens, 3)),
+        bvels=np.full((n_ens, 3), 0.02),
+        hbot=np.full(n_ens, 100.0) + rng.normal(0, 1.0, n_ens),
+        izd=np.arange(n_ul, n_ul + n_dl),
+        izu=np.arange(n_ul - 1, -1, -1),
+        slat=np.full(n_ens, np.nan),
+        slon=np.full(n_ens, np.nan),
+    )
+    return ens
+
+
+def test_edit_outliers_masks_dl_velocity_spike():
+    ens = _make_ens_outlier()
+    dl_row = ens.izd[1]
+    ens.u[dl_row, 50] = 15.0  # physically impossible spike
+    result = edit_outliers(ens)
+    assert np.isnan(result.u[dl_row, 50])
+    assert np.isnan(result.weight[dl_row, 50])
+    # unlike the weight-only editors, outlier() NaNs all velocity components
+    assert np.isnan(result.v[dl_row, 50])
+    assert np.isnan(result.w[dl_row, 50])
+
+
+def test_edit_outliers_masks_ul_block_independently():
+    ens = _make_ens_outlier()
+    ul_row = ens.izu[0]
+    ens.w[ul_row, 120] = -9.0
+    result = edit_outliers(ens)
+    assert np.isnan(result.w[ul_row, 120])
+    # clean cells survive both sweeps
+    frac_masked = np.mean(~np.isfinite(result.u))
+    assert frac_masked < 0.05
+
+
+def test_edit_outliers_bottom_track_spike():
+    ens = _make_ens_outlier()
+    ens.bvel[70, 0] = 5.0
+    result = edit_outliers(ens)
+    assert np.all(np.isnan(result.bvel[70]))
+    assert np.isnan(result.hbot[70])
+    assert np.isfinite(result.bvel[71]).all()
+
+
+def test_edit_outliers_does_not_mutate_input():
+    ens = _make_ens_outlier()
+    ens.u[ens.izd[0], 10] = 20.0
+    u_orig = ens.u.copy()
+    result = edit_outliers(ens)
+    np.testing.assert_array_equal(ens.u, u_orig)
+    assert result is not ens
+
+
+# --- edit_mask_bins (edit_data.m bin masking, incl. zero-blanking bin 1) ---
+
+
+def test_edit_mask_bins_masks_weight_rows_only():
+    ens = _make_ens_outlier()
+    # DL bin 0 and UL bin 0 (0-based instrument bins), as edit_data.m does
+    # when the blanking distance is zero.
+    result = edit_mask_bins(ens, dn_bins=[0], up_bins=[0])
+    assert np.all(np.isnan(result.weight[ens.izd[0], :]))
+    assert np.all(np.isnan(result.weight[ens.izu[0], :]))
+    # velocities untouched (edit_data.m only NaNs d.weight)
+    assert np.isfinite(result.u).all()
+    # other rows untouched
+    assert np.isfinite(result.weight[ens.izd[1], :]).all()
+
+
+def test_edit_mask_bins_ignores_out_of_range():
+    ens = _make_ens_outlier()
+    result = edit_mask_bins(ens, dn_bins=[99], up_bins=[])
+    assert np.isfinite(result.weight).all()

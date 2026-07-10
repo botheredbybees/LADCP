@@ -22,7 +22,13 @@ from ladcp.ingestion.ctd import assign_bin_depths, estimate_ctd_adcp_lag, load_c
 from ladcp.ingestion.rdi import load_rdi
 from ladcp.solution.inverse import EnsembleData, InverseResult, compute_inverse, prepare_superensembles
 from ladcp.transforms.beam2earth import beam2earth, uvrot
-from ladcp.qa.editing import edit_large_velocities, edit_sidelobes, edit_w_outliers
+from ladcp.qa.editing import (
+    edit_large_velocities,
+    edit_mask_bins,
+    edit_outliers,
+    edit_sidelobes,
+    edit_w_outliers,
+)
 
 THETA_DEG = 20.0  # RDI Workhorse 300 kHz beam angle
 DROT_DEG = 12.318441  # magnetic declination East (NOAA WMM, P16N 2015 station)
@@ -204,9 +210,16 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
         slat=slat, slon=slon,
     )
 
+    ens = edit_outliers(ens)  # loadrdi.m outlier(), runs before edit_data.m
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
     ens = edit_large_velocities(ens)
     ens = edit_w_outliers(ens)
+    # edit_data.m: mask bin 1 of any instrument with zero blanking distance.
+    ens = edit_mask_bins(
+        ens,
+        dn_bins=[0] if rdi.blnk_m == 0 else [],
+        up_bins=[0] if rdi_ul.blnk_m == 0 else [],
+    )
     se = prepare_superensembles(ens)  # dz=None: auto-computes median bin spacing (8m for P16N)
     return compute_inverse(
         se,
