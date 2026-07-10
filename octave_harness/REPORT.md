@@ -657,6 +657,59 @@ the pairing fix — its xfail is restored, non-strict).
    still drops 156/828 super-ensembles — with formation logic aligned,
    the bin centers should coincide and kept-pairs should approach 828.
 
+## P6 — formation parity: VALIDATION TARGETS MET (session 2026-07-11)
+
+**The campaign goal is reached: u RMSE 0.0450 and v RMSE 0.0333 vs the
+archived 003.nc, both under the 0.05 tolerance.** Both integration tests
+are hard assertions (no xfail). Suite: 237 passed, 8 skipped, 0 xfailed.
+
+The final piece was super-ensemble formation parity, driven by a new
+dump-driven harness (`octave_harness/formation_only.py`: Octave step09
+`d` → Python `rotup2down` + `prepare_superensembles` vs Octave's step10
+`di` — identical input, so any diff is formation logic). Findings, all
+fixed in commit `1105520`:
+
+1. **Window trigger series**: prepinv.m:509 triggers on `d.izm(1,:)` (the
+   first-row bin depth), not `d.z` — Python's use of z alone produced 871
+   windows vs Octave's 828.
+2. **Expansion arithmetic** (prepinv:514-519): MATLAB colon + round-half-
+   away-from-zero, out-of-range indices removed (not clipped), singleton
+   windows duplicated (`[i1 i1]`).
+3. **`medianan(x, na)` is a half-window** (averages the 2·na+1 central
+   sorted values). With `iav = round(n_win/2)` it always covers every
+   finite sample — i.e. it degenerates to a NaN-mean. The old Python
+   `_medianan` treated iav as a total count (a genuinely trimmed mean):
+   wrong on every cell, and the source of the 0.04 rms residual after the
+   windowing fix.
+4. **stdnan semantics** for ruvs and BT std (0 finite → NaN, 1 → 0, else
+   N−1) — feeds the "std==0" masking chain.
+5. **Tilt weight** (prepinv:85-88): weight ×= 1−tanh(tilt/10)/2.
+6. **Post-loop chain in order**: `outlier()` on the SEs with LDEO's
+   RAW-ping-rate nblock (~207 — p.outlier_n is set at loadrdi and never
+   recomputed) and the BT branch off (outlier.m's 4-column check fails on
+   di.bvel's orientation); BT std==0 → 0.1 + 2×median wstd discard;
+   all-NaN column deletion; ruvs/weight NaN chain + superens_std_min
+   floor (instrument-derived 0.083833); dt after deletions.
+
+Formation harness verdict: n_se 828 = 828, z rms 2e-13, izm exact, ru/rv
+5e-8, rw 6e-17, ruvs 8e-8, weight 2e-17 — machine precision.
+
+Full-pipeline stage picture after this: Stage A NEAR (P5), Stage C ru/rv
+0.072/0.078 vs step12 (the remaining spread is LDEO's step-11 lanarrow
+trim, still unported, plus sub-bin izm input differences shifting window
+boundaries — no longer material to the validation target), Stage D u/v
+0.109/0.042 vs the harness's own SADCP-less answer. Against the archived
+003.nc — the actual validation reference — u 0.0450 / v 0.0333.
+
+**Remaining (optional) work, no longer gating validation:**
+- Port lanarrow (step 11) if Stage C/D parity vs step12 is ever wanted at
+  the same machine-precision level as Stages A/formation.
+- Parse Single_Ping_Err from the PD0 fixed leader so superens_std_min is
+  derived rather than a parameter (currently 0.083833 passed by the P16N
+  callers).
+- Generalize the validation to more casts (S4P processed_uv set) before
+  declaring the pipeline production-ready.
+
 ## P2 — stage-diff rerun with corrected methodology (session 2026-07-06)
 
 Methodology changes vs 2026-07-05: **masking-policy branch applied** (P1's

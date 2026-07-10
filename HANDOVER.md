@@ -1,14 +1,13 @@
 # Handover: P16N Cast 003 RMSE Closure
 
 **Date**: 2026-07-11
-**Status**: **Stage A is CLOSED** — the Python pipeline through editing
-(ingestion, transforms + 3-beam, sound speed, all editors, weights) is
-numerically equivalent to LDEO_IX on P16N 003 (velocities to ~4e-6 m/s
-rms, weight to 0.002). The one remaining differing stage is
-super-ensemble formation (`prepare_superensembles` vs `prepinv.m`).
-Archive RMSE: u 0.0565 / v 0.0519 vs the 0.05 target (both xfail,
-non-strict; v was briefly 0.0499 on 2026-07-10 before the pairing fix
-re-registered the UL data).
+**Status**: **VALIDATION TARGETS MET — u RMSE 0.0450, v RMSE 0.0333 vs
+the archived LDEO 003.nc, both under the 0.05 tolerance, both hard test
+assertions.** Stage A (ingestion→editing→weights) and super-ensemble
+formation both match Octave LDEO_IX to machine precision on P16N 003;
+the solver was exonerated back in P3. See REPORT.md P6 for the final
+formation-parity findings and the short list of optional follow-ups
+(lanarrow port, Single_Ping_Err parsing, multi-cast validation).
 
 ## Session history (one line each; details in `octave_harness/REPORT.md`)
 
@@ -50,16 +49,16 @@ beam cells reconstructed via zero error velocity, applied to DL/UL/BT.
   tilt/tiltd masking, echo penalty, non-pinging removal incl. the
   dru-twice bug). Weight rms 0.151 → **0.0020**.
 
-## Current state (2026-07-11)
+## Current state (2026-07-11, end of session)
 
-- **Stage A: all fields NEAR vs Octave step09** — ru/rv 3.7e-6/3.9e-6,
-  rw 2.1e-5, weight 0.0020, izm 0.89 m (sub-bin).
-- Stage C (super-ensembles): ru 0.0965 / rv 0.1016 — the sole remaining
-  divergence, isolated to `prepare_superensembles()` vs `prepinv.m`
-  (identical inputs, solver exonerated by P3).
-- Stage D vs Octave harness: u 0.0762 / v 0.0569.
-- Full suite: **232 passed, 8 skipped, 2 xfailed** (u and v archive-RMSE
-  checks, both non-strict).
+- **Archive RMSE: u 0.0450 / v 0.0333 — both validation targets MET**
+  (r(u) +0.77; worst stratum 1000-2000 m u now 0.0396).
+- Stage A: all fields NEAR vs Octave step09 (velocities ~4e-6, weight
+  0.002).
+- Formation: machine-precision match vs Octave step10 given identical
+  input (formation_only.py: n_se 828=828, ru/rv 5e-8, weight 2e-17).
+- Full suite: **237 passed, 8 skipped, 0 xfailed** — the u and v RMSE
+  checks are hard assertions.
 
 ## Current numbers (`scripts/diag_rmse_strata.py`, NEW config, 2026-07-10,
 after depth fix + editing port + sound-speed correction)
@@ -93,17 +92,15 @@ The honest first divergence is Stage A velocities, now down to rms ~0.08
 m/s on both-finite cells, max|diff| ~3 m/s. See REPORT.md's updated "P4
 handoff" for detail:
 
-One target left: super-ensemble formation. See REPORT.md "P5 handoff":
+DONE — see REPORT.md P6. Optional follow-ups (not gating validation):
 
-1. Diff `prepare_superensembles()` against `prepinv.m` steps 10-12
-   (reference-velocity subtraction, prepinv's outlier discards,
-   tilt-based weight reduction, SE-std flooring, the step10/11/12
-   two-pass + lanarrow structure).
-2. Dump-driven formation test: feed Octave step09 `d` into
-   `prepare_superensembles()`, diff against step12 `di` — pure formation
-   logic, no input ambiguity.
-3. With formation aligned, Stage C pairing should keep ~828/828
-   super-ensembles (currently 672).
+1. Port lanarrow (LDEO step 11) for machine-precision Stage C/D parity
+   vs step12.
+2. Parse Single_Ping_Err from the PD0 fixed leader so superens_std_min
+   is derived, not a hardcoded 0.083833 in the P16N callers.
+3. Validate against more casts (S4P processed_uv, 55+ casts) before
+   declaring production-ready; then the NetCDF writer/CLI gaps from
+   CLAUDE.md are the remaining feature work.
 
 ## rotup2down: implemented, tested, does not help — not committed
 
@@ -133,4 +130,6 @@ lines 294–418 if ever needed.)
 | `src/ladcp/ingestion/rdi.py` | `best_ul_shift()` (loadrdi UL merge bestlag, sequence semantics) |
 | `src/ladcp/qa/editing.py` | + `build_ldeo_weights()` (loadrdi weight construction) |
 | `octave_harness/diag_stage_a_residual.py` | New: per-row/per-phase/weight localization + UL shift scan |
+| `octave_harness/formation_only.py` | New: dump-driven formation harness (step09 d -> Python formation vs step10 di) |
+| `src/ladcp/solution/inverse.py` | prepinv parity: izm-row window trigger, exact expansion, half-window medianan, _stdnan, tilt weight, post-loop chain |
 | `HANDOVER.md` | This file — rewritten |
