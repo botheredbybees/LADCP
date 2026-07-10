@@ -544,20 +544,37 @@ effect: Stage A ru rms 0.117 → **0.080** (session cumulative 0.215 →
 gone), mask_disagree 9.4 → 7.4%; Stage C ru rms 0.098 → 0.094; archive
 RMSE (NEW config) u 0.0848 → **0.0787**, v 0.0595 → **0.0552**.
 
+**P4 continued (2026-07-10, second follow-up): sound-speed correction
+executed** (commit `d70e10f`). New `ladcp.transforms.soundspeed` module:
+`sound_speed()` (Chen & Millero via `sounds.m` — parity pinned to the
+Octave-measured output 1732.139394 at S=40/T=40/P=10000, NOT the stale
+in-file check-value comment 1731.995), `depth_to_pressure()` (`press.m`),
+`apply_sound_speed_correction()` (`getdpthi.m:182-207` velocity/BT
+scaling + `:428-441` izm bin-offset scaling; applied unconditionally
+since `loadrdi.m:346` hardcodes `soundc=0`). Measured effect: **izm rms
+1.55 → 0.36 m** (max 7.2 → 2.3 m — the bin-length scaling was indeed
+the remaining registration residual), **Stage D u rms 0.103 → 0.078, v
+0.076 → 0.062**; archive RMSE (NEW config) **u TOTAL 0.0787 → 0.0661,
+r(u) 0.41 → 0.63, 1000–2000 m u 0.1414 → 0.1006**. Stage A velocity rms
+essentially unchanged (0.080/0.088) as expected — the ratio is a ~0.1–1%
+scaling, its leverage was on depth registration and the solution stages.
+
 **What the next session should investigate (P4 handoff, updated):**
-1. ~~Port `loadrdi.m::outlier()` + bin-1 masking~~ — DONE, see above.
-2. Sound-speed corrections Python lacks: velocity scaling `ss/sv`
-   (`getdpthi.m:182-207`, needs a `sounds.m` port + CTD temp at the
-   instrument) and bin-length scaling for izm (`getdpthi.m:428-439`,
-   explains the remaining izm ±7 m row-dependent residual).
+1. ~~Port `loadrdi.m::outlier()` + bin-1 masking~~ — DONE (`25df9de`).
+2. ~~Sound-speed corrections~~ — DONE (`d70e10f`), see above.
 3. The residual Stage A rms (~0.08 u/v on both-finite cells, max|diff|
    ~3 m/s) — remaining candidates: 3-beam solutions (Octave computes
    14422 DL / 8473 UL 3-beam solutions where one beam is bad; Python's
    beam2earth() has no 3-beam path, so those cells either differ or get
    garbage from a bad beam), and the remaining mask policy differences
    (rows 24-25 instrument-nearest-bin masking, 7.4% mask_disagree).
-4. Re-measure Stage C/D and archive RMSE after (2)+(3); the 1000-2000 m
-   u stratum (0.1414) is still the dominant archive-RMSE contributor.
+4. Re-measure Stage C/D and archive RMSE after (3); the 1000-2000 m
+   u stratum (0.1006) is still the dominant archive-RMSE contributor.
+   Also worth checking: the deep stratum (3000-4500 m) u worsened
+   0.0439 → 0.0696 with the sound-speed correction while everything
+   else improved — plausibly interaction with bottom-track scaling;
+   verify the BT `sc` application against `getdpthi.m:188-197` if that
+   stratum resists item (3).
 
 ## P2 — stage-diff rerun with corrected methodology (session 2026-07-06)
 

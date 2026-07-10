@@ -27,28 +27,34 @@ Same session, second milestone: **ported `loadrdi.m::outlier()` and
 commit `25df9de`) — the Python-side unmasked garbage (14 m/s cells) that
 dominated Stage A max|diff| is gone.
 
+Third milestone: **sound-speed correction ported** (commit `d70e10f`,
+`ladcp.transforms.soundspeed`): `sounds.m`/`press.m` ports plus
+`getdpthi.m`'s velocity/bottom-track/izm-bin-offset scaling by ss/sv.
+
 ## Current state after the P4 fix + editing port
 
-- izm vs Octave step09: rms 47.9 m → **1.55 m** (mean +0.02 m, no depth
-  correlation). Residual max 7.2 m ≈ the sound-speed bin-length scaling
-  Python doesn't yet apply.
+- izm vs Octave step09: rms 47.9 m → 1.55 m (depth fix) → **0.36 m**
+  (sound-speed bin-offset scaling); max 108.8 → 2.3 m. Depth registration
+  is closed.
 - Stage A ru rms vs Octave: 0.215 → 0.117 (ping-pairing fix) → **0.080**
   (editing port); max|diff| 14.3 → **3.0 m/s**.
-- Full suite: **209 passed, 8 skipped, 2 xfailed** (the two RMSE checks).
+- Stage D vs Octave harness: u rms 0.093 → **0.078**, v 0.063 → **0.062**.
+- Full suite: **217 passed, 8 skipped, 2 xfailed** (the two RMSE checks).
 
 ## Current numbers (`scripts/diag_rmse_strata.py`, NEW config, 2026-07-10,
-after the P4 depth fix AND the outlier/bin-1 editing port)
+after depth fix + editing port + sound-speed correction)
 
 | stratum | n | u RMSE | v RMSE | r(u) |
 |---|---|---|---|---|
-| TOTAL | 520 | 0.0787 | 0.0552 | +0.409 |
-| 0–1000 m | 120 | 0.0149 | 0.0171 | +0.969 |
-| 1000–2000 m | 121 | 0.1414 | 0.0471 | +0.754 |
-| 2000–3000 m | 122 | 0.0623 | 0.0768 | +0.368 |
-| 3000–4500 m | 157 | 0.0439 | 0.0597 | +0.428 |
+| TOTAL | 520 | 0.0661 | 0.0541 | +0.626 |
+| 0–1000 m | 120 | 0.0268 | 0.0349 | +0.881 |
+| 1000–2000 m | 121 | 0.1006 | 0.0685 | +0.800 |
+| 2000–3000 m | 122 | 0.0407 | 0.0559 | +0.716 |
+| 3000–4500 m | 157 | 0.0696 | 0.0522 | +0.331 |
 
 **Trajectory this session (u TOTAL): 0.0678 → 0.0848 (depth fix) →
-0.0787 (editing port).** The intermediate rise is expected, not a
+0.0787 (editing port) → 0.0661 (sound-speed correction), with r(u)
+0.48 → 0.63.** The intermediate rise is expected, not a
 regression signal: the old 0.0678 was partly error cancellation — the
 wrong depth registration (+90 m too deep at the bottom) partially
 compensated the Stage A velocity-structure difference in 1000–2000 m.
@@ -67,18 +73,16 @@ The honest first divergence is Stage A velocities, now down to rms ~0.08
 m/s on both-finite cells, max|diff| ~3 m/s. See REPORT.md's updated "P4
 handoff" for detail:
 
-1. **Sound-speed corrections**: velocity scaling `ss/sv`
-   (`getdpthi.m:182-207`; needs a `sounds.m` port and CTD temperature at
-   the instrument) and bin-length scaling for izm (`getdpthi.m:428-439`,
-   the remaining izm ±7 m row-dependent residual).
-2. **3-beam solutions**: Octave's loadrdi computes 14422 DL / 8473 UL
+1. **3-beam solutions**: Octave's loadrdi computes 14422 DL / 8473 UL
    3-beam solutions where one beam is bad; Python's `beam2earth()` has no
    3-beam path — those cells either differ or inherit a bad beam. Also the
    remaining mask-policy differences (instrument-nearest bins, 7.4%
    mask_disagree).
-3. Re-measure `diff_stages.py` and `diag_rmse_strata.py` after 1–2; the
-   1000–2000 m u stratum (0.1414) is still the dominant archive-RMSE
-   contributor.
+2. Re-measure after (1); the 1000–2000 m u stratum (0.1006) is still the
+   dominant archive-RMSE contributor. The deep stratum (3000–4500 m) u
+   worsened 0.0439 → 0.0696 with the sound-speed correction while all
+   else improved — if it persists, verify the bottom-track `sc`
+   application against `getdpthi.m:188-197`.
 
 ## rotup2down: implemented, tested, does not help — not committed
 
@@ -101,4 +105,6 @@ lines 294–418 if ever needed.)
 | `octave_harness/REPORT.md` | P4 section + RESOLVED marker on the P2-era priority |
 | `src/ladcp/qa/editing.py` | `edit_outliers()` (loadrdi outlier() port), `edit_mask_bins()` (edit_data.m bin masking) |
 | `tests/test_editing.py` | Unit tests for both new editors (spikes, UL/DL independence, bottom track, no mutation) |
+| `src/ladcp/transforms/soundspeed.py` | New: `sound_speed()` (sounds.m), `depth_to_pressure()` (press.m), `apply_sound_speed_correction()` (getdpthi.m scaling) |
+| `tests/test_soundspeed.py` | Unit tests incl. Octave-measured sounds.m parity value |
 | `HANDOVER.md` | This file — rewritten |
