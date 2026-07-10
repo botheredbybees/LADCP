@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import re
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -347,30 +348,49 @@ def load_ctd(path: Path | str, **kwargs) -> CTDTimeSeries:
         raise
 
 
+def pressure_to_depth(
+    p_dbar: NDArray[np.float64], lat_deg: float
+) -> NDArray[np.float64]:
+    """Pressure (dbar) to depth (m), Saunders & Fofonoff (1976), EOS-80 refit.
+
+    Port of loadctd.m::p2z (LDEO_IX). Check value: 9712.654 m at p = 10000
+    dbar, lat = 30. Uses z=0 at p=0 (no 1-atm surface offset).
+    """
+    p = np.asarray(p_dbar, dtype=np.float64) / 10.0  # dbar -> bars, as in p2z
+    x = math.sin(math.radians(lat_deg)) ** 2
+    g = 9.780318 * (1.0 + (5.2788e-3 + 2.36e-5 * x) * x) + 1.092e-5 * p
+    depth = (((-1.82e-11 * p + 2.279e-7) * p - 2.2512e-3) * p + 97.2659) * p
+    return depth / g
+
+
 def assign_bin_depths(
     rdi: RDIData,
     ctd: CTDTimeSeries,
     *,
     looker: str = "down",
     lat_deg: float | None = None,
+    time_offset_days: float = 0.0,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Compute instrument depth and bin absolute depths from CTD and ADCP geometry.
+
+    lat_deg selects the Saunders & Fofonoff pressure->depth conversion
+    (pressure_to_depth(), matching LDEO_IX loadctd.m); without it a crude
+    shallow-water fallback z = p * 1.00445 is used, which reads ~2% too deep
+    below ~2000 dbar -- always pass lat_deg when it is known.
+
+    time_offset_days shifts the CTD pressure sampling to ADCP time + offset,
+    correcting a CTD-ADCP clock offset (see estimate_ctd_adcp_lag()).
 
     Returns:
         z_m: (nens,) instrument depth in metres, positive down
         izm: (nbin, nens) absolute depth of each bin in metres, positive down
     """
-    p_interp = np.interp(rdi.time_julian, ctd.time_julian, ctd.pressure_dbar)
+    p_interp = np.interp(
+        rdi.time_julian + time_offset_days, ctd.time_julian, ctd.pressure_dbar
+    )
 
     if lat_deg is not None:
-        sin2 = math.sin(math.radians(lat_deg)) ** 2
-        g = 9.780318 * (1 + 5.2788e-3 * sin2) + 1.092e-6 * p_interp
-        z_m = (
-            9.72659 * p_interp
-            - 2.2512e-5 * p_interp**2
-            + 2.279e-10 * p_interp**3
-            - 1.82e-15 * p_interp**4
-        ) / g
+        z_m = pressure_to_depth(p_interp, lat_deg)
     else:
         z_m = p_interp * 1.00445
 
@@ -379,6 +399,87 @@ def assign_bin_depths(
     izm = z_m[np.newaxis, :] + sign * bin_offsets[:, np.newaxis]  # (nbin, nens)
 
     return z_m, izm
+
+
+def estimate_ctd_adcp_lag(
+    time_adcp_julian: NDArray[np.float64],
+    w_adcp: NDArray[np.float64],
+    ctd: CTDTimeSeries,
+    *,
+    lat_deg: float | None = None,
+    max_lag_scans: int = 150,
+) -> tuple[int, float, float]:
+    """Estimate the CTD-ADCP clock offset by w cross-correlation.
+
+    Equivalent of LDEO_IX loadctd.m's besttlag() step (whole-series variant):
+    the package sinking rate is observed independently by the CTD (as the
+    pressure time-derivative) and by the ADCP (earth-frame vertical velocity),
+    so cross-correlating the two time series exposes any clock offset.
+
+    Args:
+        time_adcp_julian: (nens,) ADCP ensemble times (Julian days).
+        w_adcp: (nens,) earth-frame vertical velocity per ensemble, e.g.
+            nanmedian over bins (positive during descent).
+        ctd: CTD time series (its own clock).
+        lat_deg: latitude for pressure_to_depth; fallback 1.00445 when None.
+        max_lag_scans: search window in resampled CTD scans (LDEO ctdmaxlag
+            default 150).
+
+    Returns:
+        (lag_scans, lagdt_days, corr): CTD pressure evaluated at
+        time_adcp_julian + lagdt_days aligns with the ADCP samples --
+        i.e. pass lagdt_days as assign_bin_depths(time_offset_days=...).
+        lag_scans counts resampled-grid intervals of lagdt_days.
+    """
+    # Resample pressure onto a regular >=0.5 s grid before differentiating:
+    # high-rate SBE files quantize the time column coarsely (24 Hz data with
+    # ~0.7 s timestamp resolution -> most consecutive dt are exactly 0), so a
+    # per-scan gradient is undefined. LDEO's workflow has the same property
+    # via its 2 Hz files + loadctd.m's time-jitter fix.
+    finite_p = np.isfinite(ctd.pressure_dbar) & np.isfinite(ctd.time_julian)
+    t_p = ctd.time_julian[finite_p]
+    span_days = float(t_p[-1] - t_p[0])
+    nominal_dt_s = span_days * 86400.0 / max(len(t_p) - 1, 1)
+    dtctd_s = max(0.5, nominal_dt_s)
+    dtctd_days = dtctd_s / 86400.0
+    t_grid = t_p[0] + np.arange(int(span_days / dtctd_days) + 1) * dtctd_days
+    p_grid = np.interp(t_grid, t_p, ctd.pressure_dbar[finite_p])
+
+    if lat_deg is not None:
+        z_ctd = -pressure_to_depth(p_grid, lat_deg)
+    else:
+        z_ctd = -p_grid * 1.00445
+    # w_ctd positive during descent (z negative-down, decreasing), loadctd.m
+    w_ctd = -np.gradient(z_ctd, dtctd_s)
+
+    finite_w = np.isfinite(w_adcp) & np.isfinite(time_adcp_julian)
+    t_a = time_adcp_julian[finite_w]
+    w_a = w_adcp[finite_w]
+    w_a = w_a - np.nanmean(w_a)
+
+    t_c = t_grid
+    w_c = w_ctd
+
+    best = (0, -np.inf)
+    for lag in range(-max_lag_scans, max_lag_scans + 1):
+        wc = np.interp(t_a + lag * dtctd_days, t_c, w_c)
+        wc = wc - wc.mean()
+        denom = math.sqrt(float(np.dot(wc, wc)) * float(np.dot(w_a, w_a)))
+        if denom == 0.0:
+            continue
+        c = float(np.dot(wc, w_a)) / denom
+        if c > best[1]:
+            best = (lag, c)
+
+    lag_scans, corr = best
+    if abs(lag_scans) >= max_lag_scans:
+        warnings.warn(
+            f"CTD-ADCP lag search hit the +/-{max_lag_scans}-scan window edge "
+            f"(lag={lag_scans}, corr={corr:.3f}); a coarse pre-alignment may "
+            "be needed",
+            stacklevel=2,
+        )
+    return lag_scans, lag_scans * dtctd_days, corr
 
 
 def compute_ship_velocity(

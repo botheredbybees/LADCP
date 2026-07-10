@@ -348,3 +348,94 @@ def test_compute_ship_velocity_insufficient_data():
     u_ship, v_ship = compute_ship_velocity(lat, lon, time_jul)
     assert u_ship == 0.0
     assert v_ship == 0.0
+
+
+# --- pressure_to_depth (Saunders & Fofonoff p2z, loadctd.m parity) ---
+
+from ladcp.ingestion.ctd import estimate_ctd_adcp_lag, pressure_to_depth
+
+
+def test_pressure_to_depth_saunders_check_value():
+    # Documented check value in loadctd.m::p2z: depth = 9712.654 m
+    # for p = 1000 bars (= 10000 dbar), lat = 30 deg.
+    z = pressure_to_depth(np.array([10000.0]), lat_deg=30.0)
+    assert abs(z[0] - 9712.654) < 0.01
+
+
+def test_pressure_to_depth_shallower_than_fallback_at_depth():
+    # At 4400 dbar the Saunders depth is ~89 m shallower than p*1.00445
+    # (the izm registration offset root cause, octave_harness REPORT.md P2).
+    p = np.array([4400.0])
+    z = pressure_to_depth(p, lat_deg=-15.0)
+    assert 80.0 < (p[0] * 1.00445 - z[0]) < 100.0
+
+
+def test_assign_bin_depths_lat_uses_saunders():
+    rdi = _make_rdi(nbin=4, nens=3)
+    ctd = _make_ctd()
+    z_m, _ = assign_bin_depths(rdi, ctd, looker="down", lat_deg=-15.0)
+    p_interp = np.interp(rdi.time_julian, ctd.time_julian, ctd.pressure_dbar)
+    np.testing.assert_allclose(z_m, pressure_to_depth(p_interp, lat_deg=-15.0))
+
+
+def test_assign_bin_depths_time_offset_shifts_pressure_sampling():
+    rdi = _make_rdi(nbin=4, nens=3)
+    ctd = _make_ctd()
+    tau_days = 30.0 / 86400.0
+    z_shift, _ = assign_bin_depths(rdi, ctd, time_offset_days=tau_days)
+    p_expected = np.interp(
+        rdi.time_julian + tau_days, ctd.time_julian, ctd.pressure_dbar
+    )
+    np.testing.assert_allclose(z_shift, p_expected * 1.00445)
+
+
+# --- estimate_ctd_adcp_lag (loadctd.m besttlag equivalent) ---
+
+
+def _synthetic_cast(tau_s: float, dtctd_s: float = 0.5, nscans: int = 8000):
+    """CTD pressure triangle cast + ADCP whose clock lags CTD by tau_s.
+
+    ADCP timestamps t_a correspond to physical events at t_a + tau_s, so the
+    aligned CTD pressure for ADCP sample t_a is p_ctd(t_a + tau_s):
+    estimate_ctd_adcp_lag() should recover lagdt_days = +tau_s / 86400.
+    """
+    rng = np.random.default_rng(42)
+    t0 = 2457000.0
+    t_phys = t0 + np.arange(nscans) * dtctd_s / 86400.0
+    half = nscans // 2
+    # descent then ascent at ~1 m/s with some variability
+    w_pkg = np.where(np.arange(nscans) < half, 1.0, -1.0)
+    w_pkg = w_pkg * (1.0 + 0.3 * np.sin(np.arange(nscans) / 97.0))
+    depth = np.cumsum(w_pkg) * dtctd_s
+    depth -= depth.min() - 10.0
+    ctd = CTDTimeSeries(
+        time_julian=t_phys,
+        pressure_dbar=depth / 1.00445,
+        temp_c=np.full(nscans, 5.0),
+        salinity=np.full(nscans, 35.0),
+    )
+    # ADCP samples every ~1.4 s, clock offset -tau (labels earlier than physical)
+    idx = np.arange(0, nscans - 200, 3)
+    t_adcp = t_phys[idx] - tau_s / 86400.0
+    w_adcp = w_pkg[idx] + rng.normal(0.0, 0.05, idx.size)
+    return t_adcp, w_adcp, ctd
+
+
+def test_estimate_ctd_adcp_lag_recovers_synthetic_offset():
+    tau_s = 12.0
+    t_adcp, w_adcp, ctd = _synthetic_cast(tau_s)
+    lag_scans, lagdt_days, corr = estimate_ctd_adcp_lag(
+        t_adcp, w_adcp, ctd, lat_deg=-15.0
+    )
+    assert corr > 0.9
+    assert abs(lagdt_days * 86400.0 - tau_s) <= 1.0  # within 2 CTD scans
+    assert abs(lag_scans - round(tau_s / 0.5)) <= 1  # scan-quantized search
+
+
+def test_estimate_ctd_adcp_lag_zero_offset():
+    t_adcp, w_adcp, ctd = _synthetic_cast(0.0)
+    lag_scans, lagdt_days, corr = estimate_ctd_adcp_lag(
+        t_adcp, w_adcp, ctd, lat_deg=-15.0
+    )
+    assert corr > 0.9
+    assert abs(lagdt_days * 86400.0) <= 1.0
