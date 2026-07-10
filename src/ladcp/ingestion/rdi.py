@@ -8,6 +8,73 @@ from ladcp.ingestion._pd0 import parse_pd0
 from ladcp.ingestion._types import RDIData
 
 
+def best_ul_shift(
+    w_dl: np.ndarray,
+    w_ul: np.ndarray,
+    ul_idx: np.ndarray,
+    *,
+    max_lag: int = 20,
+    min_corr: float = 0.9,
+) -> tuple[int, float]:
+    """Refine the UL->DL ensemble pairing by w cross-correlation.
+
+    Port of loadrdi.m's merge-lag step (lines 932-956): after the
+    nearest-time match (ul_idx), both instruments' per-ensemble median
+    vertical velocities are cross-correlated over integer ensemble shifts;
+    the best shift is applied to the pairing. Physically both instruments
+    ride the same rosette, so their w series are near-identical — the
+    recorded clocks, however, can differ by a substantial fraction of a
+    ping interval, making nearest-RECORDED-time pick the wrong neighbor
+    (P16N 003: UL clock ~0.6 s off, ping interval 1.33-1.58 s, true pairing
+    is nearest-time MINUS 1 for ~80% of ensembles).
+
+    The shift is a SEQUENCE shift, exactly like loadrdi.m's ``iu = iu(iiu)``:
+    the corrected pairing for DL ensemble k is ``ul_idx[k + shift]``, NOT
+    ``ul_idx[k] + shift``. With staggered pinging the nearest-time index
+    sequence jumps by 0 or 2 between neighbors ~20% of the time, and only
+    the sequence shift reproduces Octave's merge there (verified on P16N
+    003 by heading fingerprint: sequence shift -1 matches 100.0% of merged
+    ensembles; the value shift only 78%).
+
+    Args:
+        w_dl: (nbin_dl, nens_dl) DL earth-frame vertical velocity.
+        w_ul: (nbin_ul, nens_ul) UL earth-frame vertical velocity.
+        ul_idx: (nens_dl,) nearest-time UL ensemble index per DL ensemble.
+        max_lag: shift search half-window (loadrdi.m maxlag = 20).
+        min_corr: below this, keep the nearest-time pairing
+            (loadrdi.m: "best lag not obvious").
+
+    Returns:
+        (shift, corr): the corrected pairing is
+        ``ul_idx[np.clip(np.arange(len(ul_idx)) + shift, 0, len(ul_idx)-1)]``;
+        corr is the w correlation at that shift.
+    """
+    wb_d = np.nanmedian(w_dl, axis=0)
+    wb_u_full = np.nanmedian(w_ul, axis=0)
+    n_dl = len(ul_idx)
+    k = np.arange(n_dl)
+
+    best = (0, -np.inf)
+    for s in range(-max_lag, max_lag + 1):
+        wb_u = wb_u_full[ul_idx[np.clip(k + s, 0, n_dl - 1)]]
+        ok = np.isfinite(wb_d) & np.isfinite(wb_u)
+        if ok.sum() < 10:
+            continue
+        a = wb_d[ok] - wb_d[ok].mean()
+        b = wb_u[ok] - wb_u[ok].mean()
+        denom = np.sqrt(np.dot(a, a) * np.dot(b, b))
+        if denom == 0.0:
+            continue
+        c = float(np.dot(a, b) / denom)
+        if c > best[1]:
+            best = (s, c)
+
+    shift, corr = best
+    if corr < min_corr:
+        return 0, corr
+    return shift, corr
+
+
 def load_rdi(path: Path) -> RDIData:
     """Load one RDI PD0 binary (.000) file.
 

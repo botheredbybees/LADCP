@@ -26,7 +26,7 @@ from ladcp.ingestion.ctd import (  # noqa: E402
     estimate_ctd_adcp_lag,
     load_ctd,
 )
-from ladcp.ingestion.rdi import load_rdi  # noqa: E402
+from ladcp.ingestion.rdi import best_ul_shift, load_rdi  # noqa: E402
 from ladcp.qa.editing import (  # noqa: E402
     edit_large_velocities,
     edit_mask_bins,
@@ -111,6 +111,12 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
     ul_idx = np.argmin(
         np.abs(rdi_ul.time_julian[:, None] - rdi.time_julian[None, :]), axis=0
     )
+    # loadrdi.m refines the nearest-time pairing by w cross-correlation
+    # ("shift ADCP timeseries by 1 ensembles"); the UL clock is ~0.6 s off
+    # the DL clock, so nearest-recorded-time picks the wrong neighbor.
+    # SEQUENCE shift (iu = iu(iiu)), not a value shift -- see best_ul_shift.
+    ul_shift, _ = best_ul_shift(w_dl, w_ul, ul_idx)
+    ul_idx = ul_idx[np.clip(np.arange(len(ul_idx)) + ul_shift, 0, len(ul_idx) - 1)]
     n_ul, n_dl = rdi_ul.nbin, rdi.nbin
     u_comb = np.vstack([u_ul[:, ul_idx][::-1, :], u_dl])
     v_comb = np.vstack([v_ul[:, ul_idx][::-1, :], v_dl])

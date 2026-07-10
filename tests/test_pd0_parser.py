@@ -294,3 +294,70 @@ class TestLoadRdi:
         d = load_rdi(path)
         assert hasattr(d, "coord_transform")
         assert isinstance(d.coord_transform, int)
+
+
+# --- best_ul_shift (loadrdi.m UL->DL merge bestlag, lines 932-956) ---
+
+from ladcp.ingestion.rdi import best_ul_shift
+
+
+def _synthetic_w(shift: int, nens: int = 2000, seed: int = 11):
+    """DL and UL observe the same package w; the truly-simultaneous UL
+    ensemble sits at ul_idx + shift (the nearest-time pick is ul_idx)."""
+    rng = np.random.default_rng(seed)
+    w_pkg = np.cumsum(rng.normal(0, 0.05, nens))  # red-noise package motion
+    nbin = 5
+    w_dl = w_pkg[np.newaxis, :] + rng.normal(0, 0.02, (nbin, nens))
+    ul_idx = np.arange(nens) + 20
+    # UL column j observes package sample j - 20 - shift, so that
+    # column ul_idx[i] + shift = i + 20 + shift observes w_pkg[i].
+    n_ul = nens + 50
+    src = np.clip(np.arange(n_ul) - 20 - shift, 0, nens - 1)
+    w_ul = w_pkg[src][np.newaxis, :] + rng.normal(0, 0.02, (nbin, n_ul))
+    return w_dl, w_ul, ul_idx
+
+
+def test_best_ul_shift_recovers_negative_one():
+    w_dl, w_ul, ul_idx = _synthetic_w(shift=-1)
+    s, corr = best_ul_shift(w_dl, w_ul, ul_idx)
+    assert s == -1
+    assert corr > 0.9
+
+
+def test_best_ul_shift_zero_when_aligned():
+    w_dl, w_ul, ul_idx = _synthetic_w(shift=0)
+    s, corr = best_ul_shift(w_dl, w_ul, ul_idx)
+    assert s == 0
+    assert corr > 0.9
+
+
+def test_best_ul_shift_falls_back_on_low_correlation():
+    rng = np.random.default_rng(5)
+    w_dl = rng.normal(0, 1, (5, 500))
+    w_ul = rng.normal(0, 1, (5, 600))   # unrelated noise
+    ul_idx = np.arange(500) + 10
+    s, corr = best_ul_shift(w_dl, w_ul, ul_idx)
+    assert s == 0            # loadrdi.m: 'best lag not obvious' -> keep nearest-time
+    assert corr < 0.9
+
+
+def test_best_ul_shift_is_a_sequence_shift():
+    # With a NON-uniform ul_idx (staggered pinging makes nearest-time jump
+    # by 0 or 2), the corrected pairing must be ul_idx[k + s], not
+    # ul_idx[k] + s -- matching loadrdi.m's iu = iu(iiu).
+    rng = np.random.default_rng(21)
+    nens = 1500
+    w_pkg = np.cumsum(rng.normal(0, 0.05, nens))
+    w_dl = w_pkg[np.newaxis, :] + rng.normal(0, 0.02, (4, nens))
+    # non-uniform index map: increments of 0/1/2 (mean 1)
+    steps = rng.choice([0, 1, 2], size=nens, p=[0.15, 0.7, 0.15])
+    ul_idx = 30 + np.cumsum(steps)
+    n_ul = int(ul_idx.max()) + 40
+    # UL ensemble ul_idx[k - 1] observes package sample k  (sequence lag -1)
+    w_ul = np.full((4, n_ul), np.nan)
+    for k in range(1, nens):
+        w_ul[:, ul_idx[k - 1]] = w_pkg[k] + rng.normal(0, 0.02, 4)
+    from ladcp.ingestion.rdi import best_ul_shift as _bus
+    s, corr = _bus(w_dl, w_ul, ul_idx)
+    assert s == -1
+    assert corr > 0.9
