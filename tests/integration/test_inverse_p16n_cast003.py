@@ -29,6 +29,11 @@ from ladcp.qa.editing import (
     edit_sidelobes,
     edit_w_outliers,
 )
+from ladcp.transforms.soundspeed import (
+    apply_sound_speed_correction,
+    depth_to_pressure,
+    sound_speed,
+)
 
 THETA_DEG = 20.0  # RDI Workhorse 300 kHz beam angle
 DROT_DEG = 12.318441  # magnetic declination East (NOAA WMM, P16N 2015 station)
@@ -211,6 +216,16 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     )
 
     ens = edit_outliers(ens)  # loadrdi.m outlier(), runs before edit_data.m
+    # getdpthi.m sound-speed correction (always applied: loadrdi.m:346
+    # hardcodes soundc=0): scales velocities, bottom track, and izm bin
+    # offsets by ss/sv per ensemble per instrument.
+    temp_i = np.interp(
+        rdi.time_julian + lagdt_days, ctd.time_julian, ctd.temp_c
+    )
+    ss = sound_speed(depth_to_pressure(z_m), temp_i, 34.5)
+    ens = apply_sound_speed_correction(
+        ens, ss=ss, sv_dl=rdi.sound_vel_ms, sv_ul=rdi_ul.sound_vel_ms[ul_idx],
+    )
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
     ens = edit_large_velocities(ens)
     ens = edit_w_outliers(ens)

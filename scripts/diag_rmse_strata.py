@@ -42,6 +42,11 @@ from ladcp.solution.inverse import (  # noqa: E402
     rotup2down,
 )
 from ladcp.transforms.beam2earth import beam2earth, uvrot  # noqa: E402
+from ladcp.transforms.soundspeed import (  # noqa: E402
+    apply_sound_speed_correction,
+    depth_to_pressure,
+    sound_speed,
+)
 
 THETA_DEG = 20.0
 DROT_DEG = 12.318441
@@ -136,6 +141,16 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
         stages["post_transform"] = ens
     # loadrdi.m runs outlier() at ingestion, before edit_data.m's masking.
     ens = edit_outliers(ens)
+    # getdpthi.m sound-speed correction (loadrdi.m:346 hardcodes soundc=0,
+    # so LDEO always applies it): true sound speed at the instrument from
+    # GEOSECS pressure + CTD temperature at ADCP time, salinity 34.5.
+    temp_i = np.interp(
+        rdi.time_julian + lagdt_days, ctd.time_julian, ctd.temp_c
+    )
+    ss = sound_speed(depth_to_pressure(z_m), temp_i, 34.5)
+    ens = apply_sound_speed_correction(
+        ens, ss=ss, sv_dl=rdi.sound_vel_ms, sv_ul=rdi_ul.sound_vel_ms[ul_idx],
+    )
     ens = edit_sidelobes(ens, theta_deg=THETA_DEG, cell_size_m=rdi.blen_m)
     ens = edit_large_velocities(ens)
     ens = edit_w_outliers(ens)
