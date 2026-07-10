@@ -1,10 +1,10 @@
 # Handover: P16N Cast 003 RMSE Closure
 
 **Date**: 2026-07-10
-**Status**: izm depth-registration offset root-caused and FIXED (see below).
-RMSE target (< 0.05 m/s) not yet met; the remaining gap is now cleanly
-attributed to Stage A editing/masking differences (the last unexplained
-divergence stage).
+**Status**: izm depth-registration offset root-caused and FIXED; editing,
+sound-speed, and 3-beam ports done. **v RMSE target (< 0.05 m/s) MET
+(0.0499, xfail removed).** u at 0.0584 vs 0.05 target — remaining gap is
+the 1000–2000 m stratum plus residual Stage A mask-policy differences.
 
 ## Session history (one line each; details in `octave_harness/REPORT.md`)
 
@@ -31,6 +31,11 @@ Third milestone: **sound-speed correction ported** (commit `d70e10f`,
 `ladcp.transforms.soundspeed`): `sounds.m`/`press.m` ports plus
 `getdpthi.m`'s velocity/bottom-track/izm-bin-offset scaling by ss/sv.
 
+Fourth milestone: **3-beam solutions** (commit `472571e`,
+`reconstruct_3beam()` + `beam2earth(allow_3beam=True)`): single-missing-
+beam cells reconstructed via zero error velocity, applied to DL/UL/BT.
+**v RMSE 0.0499 < 0.05 — first validation target met**; xfail removed.
+
 ## Current state after the P4 fix + editing port
 
 - izm vs Octave step09: rms 47.9 m → 1.55 m (depth fix) → **0.36 m**
@@ -39,22 +44,23 @@ Third milestone: **sound-speed correction ported** (commit `d70e10f`,
 - Stage A ru rms vs Octave: 0.215 → 0.117 (ping-pairing fix) → **0.080**
   (editing port); max|diff| 14.3 → **3.0 m/s**.
 - Stage D vs Octave harness: u rms 0.093 → **0.078**, v 0.063 → **0.062**.
-- Full suite: **217 passed, 8 skipped, 2 xfailed** (the two RMSE checks).
+- Full suite: **224 passed, 8 skipped, 1 xfailed** (only the u RMSE
+  check remains xfail; v passes as a hard assertion).
 
 ## Current numbers (`scripts/diag_rmse_strata.py`, NEW config, 2026-07-10,
 after depth fix + editing port + sound-speed correction)
 
 | stratum | n | u RMSE | v RMSE | r(u) |
 |---|---|---|---|---|
-| TOTAL | 520 | 0.0661 | 0.0541 | +0.626 |
-| 0–1000 m | 120 | 0.0268 | 0.0349 | +0.881 |
-| 1000–2000 m | 121 | 0.1006 | 0.0685 | +0.800 |
-| 2000–3000 m | 122 | 0.0407 | 0.0559 | +0.716 |
-| 3000–4500 m | 157 | 0.0696 | 0.0522 | +0.331 |
+| TOTAL | 520 | 0.0584 | 0.0499 | +0.645 |
+| 0–1000 m | 120 | 0.0353 | 0.0313 | +0.882 |
+| 1000–2000 m | 121 | 0.0781 | 0.0623 | +0.887 |
+| 2000–3000 m | 122 | 0.0497 | 0.0420 | +0.612 |
+| 3000–4500 m | 157 | 0.0608 | 0.0560 | +0.379 |
 
 **Trajectory this session (u TOTAL): 0.0678 → 0.0848 (depth fix) →
-0.0787 (editing port) → 0.0661 (sound-speed correction), with r(u)
-0.48 → 0.63.** The intermediate rise is expected, not a
+0.0787 (editing port) → 0.0661 (sound speed) → 0.0584 (3-beam); v
+0.0573 → 0.0499 (target met).** The intermediate rise is expected, not a
 regression signal: the old 0.0678 was partly error cancellation — the
 wrong depth registration (+90 m too deep at the bottom) partially
 compensated the Stage A velocity-structure difference in 1000–2000 m.
@@ -73,16 +79,17 @@ The honest first divergence is Stage A velocities, now down to rms ~0.08
 m/s on both-finite cells, max|diff| ~3 m/s. See REPORT.md's updated "P4
 handoff" for detail:
 
-1. **3-beam solutions**: Octave's loadrdi computes 14422 DL / 8473 UL
-   3-beam solutions where one beam is bad; Python's `beam2earth()` has no
-   3-beam path — those cells either differ or inherit a bad beam. Also the
-   remaining mask-policy differences (instrument-nearest bins, 7.4%
-   mask_disagree).
-2. Re-measure after (1); the 1000–2000 m u stratum (0.1006) is still the
-   dominant archive-RMSE contributor. The deep stratum (3000–4500 m) u
-   worsened 0.0439 → 0.0696 with the sound-speed correction while all
-   else improved — if it persists, verify the bottom-track `sc`
-   application against `getdpthi.m:188-197`.
+u gap to target: 0.0584 vs 0.05 (v is met). See REPORT.md "P4 handoff"
+for the full list; in order of expected leverage:
+
+1. Remaining mask-policy differences (4.4% mask_disagree; Octave masks
+   the instrument-nearest bin rows 24–25 far more aggressively — P1b).
+2. Localize the residual Stage A both-finite rms (~0.085) per-row/
+   per-depth before hypothesizing further.
+3. Deep stratum u (0.0608) — if it resists, verify bottom-track `sc`
+   vs `getdpthi.m:188-197` and the BT 3-beam path.
+4. LDEO's step-11 lanarrow super-ensemble trimming (documented
+   simplification, currently skipped).
 
 ## rotup2down: implemented, tested, does not help — not committed
 
@@ -107,4 +114,6 @@ lines 294–418 if ever needed.)
 | `tests/test_editing.py` | Unit tests for both new editors (spikes, UL/DL independence, bottom track, no mutation) |
 | `src/ladcp/transforms/soundspeed.py` | New: `sound_speed()` (sounds.m), `depth_to_pressure()` (press.m), `apply_sound_speed_correction()` (getdpthi.m scaling) |
 | `tests/test_soundspeed.py` | Unit tests incl. Octave-measured sounds.m parity value |
+| `src/ladcp/transforms/beam2earth.py` | `reconstruct_3beam()`, `beam2earth(allow_3beam=...)` |
+| `tests/test_transforms.py` | 3-beam reconstruction unit tests |
 | `HANDOVER.md` | This file — rewritten |

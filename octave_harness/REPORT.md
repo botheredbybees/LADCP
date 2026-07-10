@@ -559,22 +559,38 @@ r(u) 0.41 → 0.63, 1000–2000 m u 0.1414 → 0.1006**. Stage A velocity rms
 essentially unchanged (0.080/0.088) as expected — the ratio is a ~0.1–1%
 scaling, its leverage was on depth registration and the solution stages.
 
+**P4 continued (2026-07-10, third follow-up): 3-beam solutions executed**
+(commit `472571e`). `reconstruct_3beam()` ports loadrdi's
+zero-error-velocity reconstruction of single-missing-beam cells;
+`beam2earth(allow_3beam=True)` applied to DL/UL/bottom-track in the
+pipeline. Measured effect: Stage A %finite-match 38.9 → 43.0,
+mask_disagree 7.4 → 4.4% (rms 0.081 → 0.085 as the noisier reconstructed
+cells enter the comparison — matching Octave's coverage, not a
+regression); archive RMSE u TOTAL 0.0661 → **0.0584**, v 0.0541 →
+**0.0499**, 1000–2000 m u 0.1006 → 0.0781.
+
+**v RMSE 0.0499 < 0.05 — the v validation target is MET** (xfail removed
+from `test_inverse_v_rmse`; it is now a hard assertion).
+
 **What the next session should investigate (P4 handoff, updated):**
 1. ~~Port `loadrdi.m::outlier()` + bin-1 masking~~ — DONE (`25df9de`).
-2. ~~Sound-speed corrections~~ — DONE (`d70e10f`), see above.
-3. The residual Stage A rms (~0.08 u/v on both-finite cells, max|diff|
-   ~3 m/s) — remaining candidates: 3-beam solutions (Octave computes
-   14422 DL / 8473 UL 3-beam solutions where one beam is bad; Python's
-   beam2earth() has no 3-beam path, so those cells either differ or get
-   garbage from a bad beam), and the remaining mask policy differences
-   (rows 24-25 instrument-nearest-bin masking, 7.4% mask_disagree).
-4. Re-measure Stage C/D and archive RMSE after (3); the 1000-2000 m
-   u stratum (0.1006) is still the dominant archive-RMSE contributor.
-   Also worth checking: the deep stratum (3000-4500 m) u worsened
-   0.0439 → 0.0696 with the sound-speed correction while everything
-   else improved — plausibly interaction with bottom-track scaling;
-   verify the BT `sc` application against `getdpthi.m:188-197` if that
-   stratum resists item (3).
+2. ~~Sound-speed corrections~~ — DONE (`d70e10f`).
+3. ~~3-beam solutions~~ — DONE (`472571e`), see above.
+4. The u gap to target: 0.0584 vs 0.05, dominated by the 1000-2000 m
+   stratum (0.0781). Remaining known differences from Octave, roughly
+   in order of expected leverage:
+   - Remaining mask-policy differences (4.4% mask_disagree; Octave masks
+     the instrument-nearest bin rows 24-25 far more aggressively —
+     P1b's row-structured mask finding).
+   - The Stage A both-finite rms (~0.085) itself — no single named
+     mechanism left; compare per-row/per-depth structure of the residual
+     to localize it before hypothesizing.
+   - Deep stratum (3000-4500 m) u worsened 0.0439 → 0.0608 across the
+     sound-speed + 3-beam changes while all else improved — if it
+     resists, verify the bottom-track `sc` application against
+     `getdpthi.m:188-197` and the BT 3-beam path.
+   - LDEO's step-11 lanarrow super-ensemble outlier trimming
+     (documented simplification in run_pipeline, currently skipped).
 
 ## P2 — stage-diff rerun with corrected methodology (session 2026-07-06)
 
