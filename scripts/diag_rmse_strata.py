@@ -28,6 +28,7 @@ from ladcp.ingestion.ctd import (  # noqa: E402
 )
 from ladcp.ingestion.rdi import best_ul_shift, load_rdi  # noqa: E402
 from ladcp.qa.editing import (  # noqa: E402
+    build_ldeo_weights,
     edit_large_velocities,
     edit_mask_bins,
     edit_outliers,
@@ -96,7 +97,8 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
     z_m, izm_dl_pos = assign_bin_depths(
         rdi, ctd, looker="down", lat_deg=lat_deg, time_offset_days=lagdt_days,
     )
-    weight_dl = np.nanmean(rdi.corr.astype(np.float64), axis=2) / 128.0
+    cm_dl = np.median(rdi.corr.astype(np.float64), axis=2)
+    ts_dl = np.median(rdi.echo.astype(np.float64), axis=2)
 
     u_ul, v_ul, w_ul = beam2earth(
         rdi_ul.u, rdi_ul.v, rdi_ul.w, rdi_ul.e,
@@ -106,7 +108,8 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
     _, izm_ul_pos = assign_bin_depths(
         rdi_ul, ctd, looker="up", lat_deg=lat_deg, time_offset_days=lagdt_days,
     )
-    weight_ul = np.nanmean(rdi_ul.corr.astype(np.float64), axis=2) / 128.0
+    cm_ul = np.median(rdi_ul.corr.astype(np.float64), axis=2)
+    ts_ul = np.median(rdi_ul.echo.astype(np.float64), axis=2)
 
     ul_idx = np.argmin(
         np.abs(rdi_ul.time_julian[:, None] - rdi.time_julian[None, :]), axis=0
@@ -121,10 +124,16 @@ def run_pipeline(data_dir: Path, legacy: bool, rot: bool = False, offset: bool =
     u_comb = np.vstack([u_ul[:, ul_idx][::-1, :], u_dl])
     v_comb = np.vstack([v_ul[:, ul_idx][::-1, :], v_dl])
     w_comb = np.vstack([w_ul[:, ul_idx][::-1, :], w_dl])
-    weight_comb = np.vstack([weight_ul[:, ul_idx][::-1, :], weight_dl])
     izm_comb = np.vstack([-izm_ul_pos[:, ul_idx][::-1, :], -izm_dl_pos])
     izu = np.arange(n_ul - 1, -1, -1, dtype=int)
     izd = np.arange(n_ul, n_ul + n_dl, dtype=int)
+    # loadrdi.m weight: median-over-beams correlation, normalized, with
+    # tilt/echo/non-pinging modifiers (build_ldeo_weights docstring).
+    cm_comb = np.vstack([cm_ul[:, ul_idx][::-1, :], cm_dl])
+    ts_comb = np.vstack([ts_ul[:, ul_idx][::-1, :], ts_dl])
+    weight_comb = build_ldeo_weights(
+        cm_comb, ts_comb, rdi.pitch, rdi.roll, v_comb, w_comb, izd, izu,
+    )
 
     bt_u, bt_v, bt_w = beam2earth(
         rdi.btrack_vel_ms[0], rdi.btrack_vel_ms[1],

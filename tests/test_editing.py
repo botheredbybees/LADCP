@@ -230,3 +230,68 @@ def test_edit_mask_bins_ignores_out_of_range():
     ens = _make_ens_outlier()
     result = edit_mask_bins(ens, dn_bins=[99], up_bins=[])
     assert np.isfinite(result.weight).all()
+
+
+# --- build_ldeo_weights (loadrdi.m lines 408-533) ---
+
+from ladcp.qa.editing import build_ldeo_weights
+
+
+def _weight_inputs(nbin=6, nens=200, seed=13):
+    rng = np.random.default_rng(seed)
+    cm = rng.uniform(80, 128, (nbin, nens))
+    ts = rng.uniform(60, 90, (nbin, nens))
+    pitch = rng.normal(0, 0.5, nens)
+    roll = rng.normal(0, 0.5, nens)
+    v = rng.normal(0, 0.3, (nbin, nens))
+    w = 1.0 + rng.normal(0, 0.1, (nbin, nens))
+    izd = np.arange(3, 6)
+    izu = np.array([2, 1, 0])
+    return cm, ts, pitch, roll, v, w, izd, izu
+
+
+def test_weights_normalized_by_median_of_max():
+    cm, ts, pitch, roll, v, w, izd, izu = _weight_inputs()
+    ts[:] = 0.0  # kill the echo penalty for this test
+    wt = build_ldeo_weights(cm, ts, pitch, roll, v, w, izd, izu)
+    col_max = np.nanmax(wt, axis=0)
+    assert abs(np.nanmedian(col_max) - 1.0) < 1e-9
+
+
+def test_weights_tilt_masks_whole_ensembles():
+    cm, ts, pitch, roll, v, w, izd, izu = _weight_inputs()
+    pitch[7] = 25.0    # tilt > 22 deg
+    wt = build_ldeo_weights(cm, ts, pitch, roll, v, w, izd, izu)
+    assert np.all(np.isnan(wt[:, 7]))
+    # neighbors 6 and 8 are masked too (the 25-deg JUMP trips the
+    # tilt-derivative check -- faithful to loadrdi.m); 9 is clean
+    assert np.isfinite(wt[:, 9]).all()
+
+
+def test_weights_tilt_derivative_masks_ensembles():
+    cm, ts, pitch, roll, v, w, izd, izu = _weight_inputs()
+    roll[50] = 8.0     # jump: neighbors get tiltd > 4
+    wt = build_ldeo_weights(cm, ts, pitch, roll, v, w, izd, izu)
+    assert np.all(np.isnan(wt[:, 50]))
+
+
+def test_weights_echo_penalty_reduces_strong_echo():
+    cm, ts, pitch, roll, v, w, izd, izu = _weight_inputs()
+    cm[:] = 100.0
+    ts[:] = 70.0
+    ts[2, 30] = 90.0   # strong echo anomaly in row 2
+    wt = build_ldeo_weights(cm, ts, pitch, roll, v, w, izd, izu)
+    # the anomalous cell is the row max -> factor (1 - 1^1.5) = 0
+    assert wt[2, 30] < 1e-12
+    assert wt[2, 31] > 0.5
+
+
+def test_weights_non_pinging_ensembles_masked_per_block():
+    cm, ts, pitch, roll, v, w, izd, izu = _weight_inputs()
+    ts[:] = 0.0
+    # UL block (rows 0-2) flat w AND v at ensembles 10-12 -> non-pinging
+    w[izu, 10:13] = 1.0
+    v[izu, 10:13] = 0.1
+    wt = build_ldeo_weights(cm, ts, pitch, roll, v, w, izd, izu)
+    assert np.all(np.isnan(wt[izu][:, 10:13]))
+    assert np.isfinite(wt[izd][:, 10:13]).all()  # DL block untouched

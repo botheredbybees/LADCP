@@ -21,6 +21,7 @@ import pytest
 from ladcp.ingestion.ctd import assign_bin_depths, estimate_ctd_adcp_lag, load_ctd
 from ladcp.ingestion.rdi import best_ul_shift, load_rdi
 from ladcp.qa.editing import (
+    build_ldeo_weights,
     edit_large_velocities,
     edit_mask_bins,
     edit_outliers,
@@ -124,7 +125,8 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
         rdi, ctd, looker="down", lat_deg=lat_deg, time_offset_days=lagdt_days,
     )
     z_neg = -z_m
-    weight_dl = np.nanmean(rdi.corr.astype(np.float64), axis=2) / 128.0
+    cm_dl = np.median(rdi.corr.astype(np.float64), axis=2)
+    ts_dl = np.median(rdi.echo.astype(np.float64), axis=2)
 
     # --- Uplooker ---
     rdi_ul = load_rdi(ul_path)
@@ -142,7 +144,8 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     _, izm_ul_pos = assign_bin_depths(
         rdi_ul, ctd, looker="up", lat_deg=lat_deg, time_offset_days=lagdt_days,
     )
-    weight_ul = np.nanmean(rdi_ul.corr.astype(np.float64), axis=2) / 128.0
+    cm_ul = np.median(rdi_ul.corr.astype(np.float64), axis=2)
+    ts_ul = np.median(rdi_ul.echo.astype(np.float64), axis=2)
 
     # Time-align UL to DL: nearest UL ensemble per DL ensemble, then refine
     # by w cross-correlation (loadrdi.m "shift ADCP timeseries by N
@@ -156,7 +159,8 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     u_ul_a = u_ul[:, ul_idx]
     v_ul_a = v_ul[:, ul_idx]
     w_ul_a = w_ul[:, ul_idx]
-    weight_ul_a = weight_ul[:, ul_idx]
+    cm_ul_a = cm_ul[:, ul_idx]
+    ts_ul_a = ts_ul[:, ul_idx]
     izm_ul_neg_a = -izm_ul_pos[:, ul_idx]
 
     # --- Merge DL + UL ---
@@ -167,7 +171,6 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     u_comb = np.vstack([u_ul_a[::-1, :], u_dl])
     v_comb = np.vstack([v_ul_a[::-1, :], v_dl])
     w_comb = np.vstack([w_ul_a[::-1, :], w_dl])
-    weight_comb = np.vstack([weight_ul_a[::-1, :], weight_dl])
     izm_comb = np.vstack([izm_ul_neg_a[::-1, :], -izm_dl_pos])
 
     # izu[i] = combined-array row index for UL bin i.
@@ -175,6 +178,14 @@ def inverse_result(dl_path: Path, ul_path: Path, cnv_path: Path, ref_path: Path,
     #   UL bin n_ul-1 (shallowest)              → combined row 0
     izu = np.arange(n_ul - 1, -1, -1, dtype=int)
     izd = np.arange(n_ul, n_ul + n_dl, dtype=int)
+
+    # loadrdi.m weight: median-over-beams correlation, normalized, with
+    # tilt/echo/non-pinging modifiers (build_ldeo_weights docstring).
+    cm_comb = np.vstack([cm_ul_a[::-1, :], cm_dl])
+    ts_comb = np.vstack([ts_ul_a[::-1, :], ts_dl])
+    weight_comb = build_ldeo_weights(
+        cm_comb, ts_comb, rdi.pitch, rdi.roll, v_comb, w_comb, izd, izu,
+    )
 
     # --- Bottom track (DL only) ---
     bt_u_e, bt_v_e, bt_w_e = beam2earth(

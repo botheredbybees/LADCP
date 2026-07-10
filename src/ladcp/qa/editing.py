@@ -162,6 +162,91 @@ def edit_outliers(
     )
 
 
+def build_ldeo_weights(
+    cm: np.ndarray,
+    ts: np.ndarray,
+    pitch_dl: np.ndarray,
+    roll_dl: np.ndarray,
+    v: np.ndarray,
+    w: np.ndarray,
+    izd: np.ndarray,
+    izu: np.ndarray,
+    *,
+    tiltmax: tuple[float, float] = (22.0, 4.0),
+    weighbin1: float = 1.0,
+) -> np.ndarray:
+    """Build the per-cell weight field; port of loadrdi.m lines 408-533.
+
+    Steps, in loadrdi.m order:
+      1. weight = cm (median-over-beams correlation, combined UL+DL rows),
+         normalized by medianan(maxnan(weight)) -- the median over ensembles
+         of the per-ensemble max.
+      2. NaN whole ensembles whose tilt exceeds tiltmax[0] degrees or whose
+         tilt derivative exceeds tiltmax[1] (tilt from DL pitch/roll only,
+         matching l.pit(1,:)/l.rol(1,:)).
+      3. Echo-amplitude penalty per row: where ts exceeds the row median,
+         weight *= (1 - (ts_anom/max(ts_anom))**1.5)  (crosstalk / bottom
+         echo suppression).
+      4. Non-pinging ensemble removal per instrument block: ensembles whose
+         median |bin-to-bin gradient| of w AND v are both < 0.005 m/s.
+         NOTE: loadrdi.m line 478 tests `dru` twice and `drv` never (a real
+         bug -- only the rw- and rv-gradients are effective); replicated
+         here for parity.
+      5. Multiply bin-1 weight by weighbin1 (default 1: no-op).
+
+    Args:
+        cm: (nbin, nens) median-over-beams correlation, combined array.
+        ts: (nbin, nens) median-over-beams echo amplitude, combined array.
+        pitch_dl, roll_dl: (nens,) DL attitude in degrees.
+        v, w: (nbin, nens) combined earth-frame velocities.
+        izd, izu: combined-array row indices per instrument.
+
+    Returns (nbin, nens) weight array (new; inputs unmodified).
+    """
+    weight = np.asarray(cm, dtype=np.float64).copy()
+    col_max = np.nanmax(weight, axis=0)
+    weight = weight / np.nanmedian(col_max)
+
+    pit_r = np.radians(pitch_dl)
+    rol_r = np.radians(roll_dl)
+    tilt = np.degrees(np.arcsin(np.clip(
+        np.sqrt(np.sin(pit_r) ** 2 + np.sin(rol_r) ** 2), 0.0, 1.0)))
+    weight[:, tilt > tiltmax[0]] = np.nan
+
+    def _edge_diff(x: np.ndarray) -> np.ndarray:
+        # mean of |backward diff| and |forward diff|, zero-padded at the ends
+        # (loadrdi.m: mean(abs(diff([0,x;x,0]'))')).
+        back = np.abs(np.diff(np.concatenate(([0.0], x))))
+        fwd = np.abs(np.diff(np.concatenate((x, [0.0]))))
+        return 0.5 * (back + fwd)
+
+    tiltd = np.sqrt(_edge_diff(roll_dl) ** 2 + _edge_diff(pitch_dl) ** 2)
+    weight[:, tiltd > tiltmax[1]] = np.nan
+
+    ts = np.asarray(ts, dtype=np.float64)
+    for i in range(weight.shape[0]):
+        ts_anom = ts[i] - np.nanmedian(ts[i])
+        pos = ts_anom > 0
+        if pos.any():
+            weight[i, pos] *= 1.0 - (ts_anom[pos] / np.nanmax(ts_anom)) ** 1.5
+
+    for rows in (izd, izu):
+        if len(rows) < 2:
+            continue
+        gw = np.nanmedian(np.abs(np.diff(w[rows, :], axis=0)), axis=0)
+        gv = np.nanmedian(np.abs(np.diff(v[rows, :], axis=0)), axis=0)
+        nonping = (np.abs(gw) < 0.005) & (np.abs(gv) < 0.005)
+        weight[np.ix_(rows, np.flatnonzero(nonping))] = np.nan
+
+    if weighbin1 != 1.0:
+        if len(izd) > 0:
+            weight[izd[0], :] *= weighbin1
+        if len(izu) > 0:
+            weight[izu[0], :] *= weighbin1
+
+    return weight
+
+
 def edit_mask_bins(
     ens: EnsembleData,
     *,
