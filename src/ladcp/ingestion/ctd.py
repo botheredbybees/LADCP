@@ -50,6 +50,7 @@ def _parse_sbe_header(lines: list[str]) -> dict:
         'start_time_julian': None,
         'start_year': None,
         'lat_lon_appended': False,
+        'interval_s': None,
     }
     for line in lines:
         if line.strip() == '*END*':
@@ -67,6 +68,12 @@ def _parse_sbe_header(lines: list[str]) -> dict:
             result['columns'][int(m.group(1))] = m.group(2)
         elif content.startswith('bad_flag ='):
             result['bad_flag'] = float(content.split('=', 1)[1].strip())
+        elif content.startswith('interval ='):
+            # "# interval = seconds: 0.0416667" -- scan interval for files
+            # with no explicit time column (e.g. I7N 2018 raw 24 Hz cnv).
+            m_int = re.match(r'interval\s*=\s*seconds:\s*([0-9.eE+-]+)', content)
+            if m_int:
+                result['interval_s'] = float(m_int.group(1))
         elif 'file_type = binary' in content:
             result['file_type'] = 'binary'
         elif content.startswith('start_time ='):
@@ -130,6 +137,7 @@ def _build_ctd_time_series(
     start_year: int | None = None,
     lat: np.ndarray | None = None,
     lon: np.ndarray | None = None,
+    interval_s: float | None = None,
 ) -> CTDTimeSeries:
     """Assemble CTDTimeSeries from a (n_scans, nquan) float64 array."""
     time_raw: np.ndarray | None = None
@@ -154,7 +162,32 @@ def _build_ctd_time_series(
     if pressure is None:
         raise ValueError("No pressure column found (expected prefix: prDM, prSM, prE)")
     if time_raw is None:
-        raise ValueError("No time column found (expected: timeJ or timeS)")
+        if interval_s is not None and time_start_julian is not None:
+            # No time column, but the header gives a constant scan interval
+            # and a start time (e.g. I7N 2018 raw 24 Hz cnv: "# interval =
+            # seconds: 0.0416667" + "# start_time = ... [NMEA time,
+            # header]"). Synthesize the axis; a constant offset in the NMEA
+            # header time relative to the ADCP clock is later measured and
+            # corrected by estimate_ctd_adcp_lag() (+/-75 s search window
+            # with a min-correlation tripwire), so start_time only needs to
+            # be accurate to better than that window. Assumes a gap-free
+            # constant-rate stream, the same assumption LDEO_IX's own
+            # 24Hz->1Hz decimation makes for these files.
+            n_scans = arr.shape[0]
+            time_julian = time_start_julian + np.arange(n_scans) * interval_s / 86400.0
+            return CTDTimeSeries(
+                time_julian=time_julian,
+                pressure_dbar=pressure,
+                temp_c=temp if temp is not None else np.full(n_scans, np.nan),
+                salinity=salinity if salinity is not None else np.full(n_scans, np.nan),
+                lat=lat,
+                lon=lon,
+            )
+        raise ValueError(
+            "No time column found (expected: timeJ or timeS), and no "
+            "'# interval = seconds' + '# start_time' header pair to "
+            "synthesize a time axis from"
+        )
 
     if time_role == 'julian':
         if start_year is not None and len(time_raw) > 0 and time_raw[0] <= 366:
@@ -207,6 +240,7 @@ def _read_sbe_ascii(
         arr, col_roles, time_start_julian,
         start_year=header_info.get('start_year'),
         lat=lat, lon=lon,
+        interval_s=header_info.get('interval_s'),
     )
 
 
@@ -243,6 +277,7 @@ def _read_sbe_binary(
         arr, col_roles, time_start_julian,
         start_year=header_info.get('start_year'),
         lat=lat, lon=lon,
+        interval_s=header_info.get('interval_s'),
     )
 
 

@@ -439,3 +439,58 @@ def test_estimate_ctd_adcp_lag_zero_offset():
     )
     assert corr > 0.9
     assert abs(lagdt_days * 86400.0) <= 1.0
+
+
+# --- interval-based time fallback (I7N-style cnv with no time column) ---
+
+
+def _make_ascii_cnv_no_time(tmp_path: Path) -> Path:
+    """I7N 2018 raw-cnv variant: 24 Hz ASCII, no timeJ/timeS column; time is
+    implicit via '# interval = seconds' + '# start_time' (NMEA)."""
+    header = (
+        "* Sea-Bird SBE 9 Data File:\n"
+        "# nquan = 4\n"
+        "# nvalues = 5\n"
+        "# name 0 = prDM: Pressure, Digiquartz [db]\n"
+        "# name 1 = t090C: Temperature [ITS-90, deg C]\n"
+        "# name 2 = c0S/m: Conductivity [S/m]\n"
+        "# name 3 = flag:  0.000e+00\n"
+        "# interval = seconds: 0.0416667\n"
+        "# bad_flag = -9.990e-29\n"
+        "# start_time = Apr 28 2018 13:30:51 [NMEA time, header]\n"
+        "*END*\n"
+    )
+    rows = "\n".join(
+        f"{10.0 + i:.3f} {5.0:.4f} {3.2:.5f} 0.000e+00" for i in range(5)
+    )
+    p = tmp_path / "i7n.cnv"
+    p.write_text(header + rows + "\n")
+    return p
+
+
+def test_interval_fallback_builds_time_axis(tmp_path):
+    p = _make_ascii_cnv_no_time(tmp_path)
+    ctd = load_ctd(p)
+    assert len(ctd.time_julian) == 5
+    # spacing == interval (per-step tolerance is float64 quantization at
+    # absolute-Julian magnitude, ~5e-5 s; the mean is much tighter)
+    dt_s = np.diff(ctd.time_julian) * 86400.0
+    np.testing.assert_allclose(dt_s, 0.0416667, atol=5e-5)
+    assert abs(dt_s.mean() - 0.0416667) < 1e-5
+    # first scan at start_time (Apr 28 2018 13:30:51)
+    expected0 = _to_julian(2018, 4, 28, 13 + 30 / 60.0 + 51 / 3600.0)
+    assert abs(ctd.time_julian[0] - expected0) < 1e-9
+    np.testing.assert_allclose(ctd.pressure_dbar, 10.0 + np.arange(5))
+
+
+def test_no_time_and_no_interval_still_raises(tmp_path):
+    header = (
+        "# nquan = 2\n"
+        "# name 0 = prDM: Pressure [db]\n"
+        "# name 1 = t090C: Temperature\n"
+        "*END*\n"
+    )
+    p = tmp_path / "noint.cnv"
+    p.write_text(header + "10.0 5.0\n11.0 5.0\n")
+    with pytest.raises(ValueError, match="time"):
+        load_ctd(p)
