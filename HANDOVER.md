@@ -1,5 +1,24 @@
 # Handover: P16N Cast 003 RMSE Closure
 
+## 2026-07-11 (third session): A16N 2013 — third cruise, two new editing ports
+
+User downloaded UH SOEST processed products for A16N 2013 (124 ref
+casts); raw located at NCEI accession 0205839 and 5 casts downloaded
+(WH150 DL + WH300 UL + UH-format CTD txt — see
+`test_data/2013_A16N/DOWNLOAD_NOTES.md` for everything). Commits
+`4d2c5f2` (UH CTD loader, GPS-dday time base), `e6d0164`
+(error-velocity elim edit + PPI edit, both LDEO-faithful with per-cast
+attrs readback).
+
+**A16N results: 003 u 0.0072/v 0.0094 (best cast yet), 010
+0.0216/0.0134 — both PASS on an RDI-150BB DL, a new instrument family.
+Deep casts (>4 km: 030/060/090) FAIL** with alternating-sign 0.3–0.8
+m/s swings — weak-scatter mid-column underdetermination. **Lead: port
+getinv.m's ps.shear=1 shear-solution constraint into compute_inverse**
+(all A16N archives ran with it; P16N/I7N matched without it because
+their data is dense). Full suite 255 passed / 8 skipped; P16N + I7N
+targets still hard-met.
+
 ## 2026-07-11 (second session): I7N multi-cast validation unblocked
 
 First cross-cruise validation numbers exist. Three loader/pipeline fixes
