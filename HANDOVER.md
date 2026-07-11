@@ -1,5 +1,16 @@
 # Handover: P16N Cast 003 RMSE Closure
 
+## NEXT: bulk validation + ps.shear port
+
+`BULK_VALIDATION_BRIEF.md` (repo root) is a self-contained task brief for
+a cheap-model session: download all remaining I7N + A16N raw casts from
+NCEI and run validate_multicast over ~215 casts, producing
+`BULK_VALIDATION_REPORT.md`. Launch with: "Read and execute
+BULK_VALIDATION_BRIEF.md". Resumable across session limits (skips
+existing files/batches). The main-session follow-up is the getinv.m
+ps.shear constraint port (deep-cast lead, below) and triage of whatever
+the bulk run surfaces.
+
 ## 2026-07-11 (third session): A16N 2013 — third cruise, two new editing ports
 
 User downloaded UH SOEST processed products for A16N 2013 (124 ref
