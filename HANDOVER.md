@@ -1,5 +1,33 @@
 # Handover: P16N Cast 003 RMSE Closure
 
+## 2026-07-11 (second session): I7N multi-cast validation unblocked
+
+First cross-cruise validation numbers exist. Three loader/pipeline fixes
+(`b4be613`, `b1b5adb`, `edd41f3` — see commit bodies for detail):
+interval-based CTD time fallback (I7N cnv has no time column), coarse
+CTD-ADCP lag pre-alignment (NMEA time base off by −186 s), loadctd.m
+in-water ensemble trim (003 pinged on deck ~7 min), and SADCP-constraint
+reconstruction from the reference NC's embedded z_sadcp/u_sadcp vars
+(dominant residual: u tilt +0.21/−0.11 m/s without it).
+
+**I7N results: 003 u 0.0488 / v 0.0669, 010 u 0.0336 / v 0.0608.** Both
+u under the 0.05 target on a cruise the pipeline never saw; v slightly
+over, error is mid-depth large-scale wobbles below SADCP coverage.
+rot/offsetup2down measured again (I7N): rot neutral, rot+offset mixed
+(010 v 0.0535 but 003 v 0.0795) — defaults stay OFF; the lanarrow port
+(follow-up 1 below) is the lead candidate for closing v.
+
+New S4P downloads ("Individual Cast Data"/"Ancillary Data" dirs): 75
+LDEO .mat outputs + per-cast .txt protocols + QC PDF are new; the .nc
+files duplicate processed_uv/, and there is STILL no raw S4P PD0 —
+LADCP_raw.tgz was never downloaded (internet outage; 7 dead .crdownload
+files). I7N raw casts 020 (truncated CTD) and 030..110 also await
+re-download. Full suite: 247 passed, 8 skipped.
+
+---
+
+# Previous handover (2026-07-11, first session)
+
 **Date**: 2026-07-11
 **Status**: **VALIDATION TARGETS MET — u RMSE 0.0450, v RMSE 0.0333 vs
 the archived LDEO 003.nc, both under the 0.05 tolerance, both hard test
