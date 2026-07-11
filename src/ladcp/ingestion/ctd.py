@@ -436,6 +436,43 @@ def assign_bin_depths(
     return z_m, izm
 
 
+def ctd_in_water_window(
+    ctd: CTDTimeSeries,
+    *,
+    cut_dbar: float = 10.0,
+) -> tuple[float, float]:
+    """CTD in-water time window (loadctd.m 'Cut CTD profile', p.cut).
+
+    Port of loadctd.m lines 236-276: the cast start is the LAST scan
+    before the pressure maximum with 0 < p < cut_dbar (package just below
+    the surface starting its descent), the end is the FIRST scan after
+    the maximum with 0 < p < cut_dbar (package back at the surface).
+    On-deck scans (p <= 0 or NaN) never qualify. LDEO then discards all
+    ADCP ensembles outside this window (loadctd.m:517-520) -- without
+    the cut, pre-deployment and post-recovery ensembles enter the
+    solution with clamped surface pressure (I7N 003: ~7 min of on-deck
+    pinging before the CTD record even starts).
+
+    Returns:
+        (t_start_julian, t_end_julian) in the CTD time base. Falls back
+        to the full record boundary on either side where no qualifying
+        scan exists (same as loadctd.m's istart=1 / iend=end branches).
+    """
+    p = ctd.pressure_dbar
+    t = ctd.time_julian
+    finite = np.isfinite(p) & np.isfinite(t)
+    if not finite.any():
+        raise ValueError("CTD record has no finite pressure/time scans")
+    ipmax = int(np.nanargmax(np.where(finite, p, -np.inf)))
+    near_surface = finite & (np.abs(p - cut_dbar / 2.0) < cut_dbar / 2.0)
+
+    before = np.flatnonzero(near_surface[: ipmax + 1])
+    istart = int(before[-1]) if before.size else 0
+    after = np.flatnonzero(near_surface[ipmax:])
+    iend = int(after[0]) + ipmax if after.size else len(t) - 1
+    return float(t[istart]), float(t[iend])
+
+
 def estimate_ctd_adcp_lag(
     time_adcp_julian: NDArray[np.float64],
     w_adcp: NDArray[np.float64],
@@ -443,6 +480,7 @@ def estimate_ctd_adcp_lag(
     *,
     lat_deg: float | None = None,
     max_lag_scans: int = 150,
+    coarse_window_s: float = 600.0,
 ) -> tuple[int, float, float]:
     """Estimate the CTD-ADCP clock offset by w cross-correlation.
 
@@ -459,6 +497,14 @@ def estimate_ctd_adcp_lag(
         lat_deg: latitude for pressure_to_depth; fallback 1.00445 when None.
         max_lag_scans: search window in resampled CTD scans (LDEO ctdmaxlag
             default 150).
+        coarse_window_s: when > max_lag_scans * scan interval, a coarse
+            pre-alignment pass first scans +/- this many seconds to find
+            the neighbourhood of the correlation peak, and the fine
+            +/-max_lag_scans search runs centred there. Needed when the
+            CTD time base is a synthesized NMEA-header start time
+            (I7N-style cnv with no time column), where the deck-box vs
+            ADCP clock offset (~3 min measured on I7N 2018) far exceeds
+            the LDEO-default fine window. 0 disables the coarse pass.
 
     Returns:
         (lag_scans, lagdt_days, corr): CTD pressure evaluated at
@@ -495,19 +541,39 @@ def estimate_ctd_adcp_lag(
     t_c = t_grid
     w_c = w_ctd
 
-    best = (0, -np.inf)
-    for lag in range(-max_lag_scans, max_lag_scans + 1):
-        wc = np.interp(t_a + lag * dtctd_days, t_c, w_c)
-        wc = wc - wc.mean()
-        denom = math.sqrt(float(np.dot(wc, wc)) * float(np.dot(w_a, w_a)))
-        if denom == 0.0:
-            continue
-        c = float(np.dot(wc, w_a)) / denom
-        if c > best[1]:
-            best = (lag, c)
+    def _scan(lags: range) -> tuple[int, float]:
+        best = (lags[0], -np.inf)
+        for lag in lags:
+            wc = np.interp(t_a + lag * dtctd_days, t_c, w_c)
+            wc = wc - wc.mean()
+            denom = math.sqrt(float(np.dot(wc, wc)) * float(np.dot(w_a, w_a)))
+            if denom == 0.0:
+                continue
+            c = float(np.dot(wc, w_a)) / denom
+            if c > best[1]:
+                best = (lag, c)
+        return best
 
-    lag_scans, corr = best
-    if abs(lag_scans) >= max_lag_scans:
+    # Coarse pre-alignment: the heave-driven correlation peak is sharp
+    # (falls off within ~1 s on 2018 I7N data), so the coarse step must
+    # stay near 1 s regardless of the resampled scan interval.
+    center = 0
+    coarse_max = int(coarse_window_s / dtctd_s)
+    if coarse_max > max_lag_scans:
+        step = max(1, int(round(1.0 / dtctd_s)))
+        center, c_corr = _scan(range(-coarse_max, coarse_max + 1, step))
+        if abs(center) + step > coarse_max:
+            warnings.warn(
+                f"CTD-ADCP coarse lag search hit the +/-{coarse_window_s:.0f}-s"
+                f" window edge (lag={center * dtctd_s:.1f} s, "
+                f"corr={c_corr:.3f}); the CTD time base may be wrong by more "
+                "than that",
+                stacklevel=2,
+            )
+
+    lag_scans, corr = _scan(
+        range(center - max_lag_scans, center + max_lag_scans + 1))
+    if abs(lag_scans - center) >= max_lag_scans:
         warnings.warn(
             f"CTD-ADCP lag search hit the +/-{max_lag_scans}-scan window edge "
             f"(lag={lag_scans}, corr={corr:.3f}); a coarse pre-alignment may "

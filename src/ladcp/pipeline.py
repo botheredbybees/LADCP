@@ -24,10 +24,11 @@ import numpy as np
 from ladcp.ingestion.ctd import (
     CTDTimeSeries,
     assign_bin_depths,
+    ctd_in_water_window,
     estimate_ctd_adcp_lag,
     load_ctd,
 )
-from ladcp.ingestion.rdi import best_ul_shift, load_rdi
+from ladcp.ingestion.rdi import best_ul_shift, cut_ensembles, load_rdi
 from ladcp.qa.editing import (
     build_ldeo_weights,
     edit_large_velocities,
@@ -73,7 +74,14 @@ class CastParams:
 
         Uses GEN_Magnetic_deviation_deg (or drot), lat, uship/vship, and
         LADCP_dn_conf_single_ping_acc / _number_pings (superens_std_min =
-        single-ping accuracy / sqrt(pings), prepinv.m line 41).
+        single-ping accuracy / sqrt(pings), prepinv.m line 41). When the
+        archived run used a SADCP constraint, ladcp2cdf embeds the exact
+        profile it consumed (z_sadcp/u_sadcp/v_sadcp/uerr_sadcp variables);
+        those are read back so a validation rerun applies the same
+        constraint. Without it, the inverse has large-vertical-scale
+        freedom the archive did not (measured on I7N 003: a u tilt of
+        +0.21 m/s above 1000 m vs -0.11 below 3000 m with the depth mean
+        pinned by uship/vship).
         """
         import netCDF4
 
@@ -93,6 +101,20 @@ class CastParams:
                 u_ship=float(ds.uship) if hasattr(ds, "uship") else None,
                 v_ship=float(ds.vship) if hasattr(ds, "vship") else None,
             )
+            if "u_sadcp" in ds.variables:
+                def _var(name: str) -> np.ndarray:
+                    return np.ma.filled(
+                        ds.variables[name][:].astype(np.float64), np.nan)
+                sz, su, sv = _var("z_sadcp"), _var("u_sadcp"), _var("v_sadcp")
+                serr = (_var("uerr_sadcp") if "uerr_sadcp" in ds.variables
+                        else np.full_like(sz, 0.05))
+                ok = np.isfinite(sz) & np.isfinite(su) & np.isfinite(sv)
+                if ok.sum() >= 3:
+                    kw.update(
+                        sadcp_z=sz[ok], sadcp_u=su[ok], sadcp_v=sv[ok],
+                        sadcp_err=np.where(np.isfinite(serr[ok]),
+                                           serr[ok], 0.05),
+                    )
         finally:
             ds.close()
         kw.update(overrides)
@@ -140,6 +162,14 @@ def process_cast(
         rdi.time_julian, np.nanmedian(w_dl, axis=0), ctd,
         lat_deg=params.lat_deg,
     )
+    # Discard ensembles outside the CTD in-water window (loadctd.m:517),
+    # e.g. pre-deployment / post-recovery pinging on deck.
+    t_in0, t_in1 = ctd_in_water_window(ctd)
+    keep = ((rdi.time_julian + lagdt_days >= t_in0)
+            & (rdi.time_julian + lagdt_days <= t_in1))
+    if not keep.all():
+        rdi = cut_ensembles(rdi, keep)
+        u_dl, v_dl, w_dl = u_dl[:, keep], v_dl[:, keep], w_dl[:, keep]
     z_m, izm_dl_pos = assign_bin_depths(
         rdi, ctd, looker="down", lat_deg=params.lat_deg,
         time_offset_days=lagdt_days,

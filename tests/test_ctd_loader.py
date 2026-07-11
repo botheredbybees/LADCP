@@ -441,6 +441,103 @@ def test_estimate_ctd_adcp_lag_zero_offset():
     assert abs(lagdt_days * 86400.0) <= 1.0
 
 
+def test_estimate_ctd_adcp_lag_large_offset_coarse_prealign():
+    # I7N-style: NMEA-header CTD time base off by ~3 min, far beyond the
+    # +/-150-scan (75 s) fine window. The coarse pre-alignment pass must
+    # recover it without warnings.
+    import warnings
+
+    tau_s = 186.0
+    t_adcp, w_adcp, ctd = _synthetic_cast(tau_s)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        lag_scans, lagdt_days, corr = estimate_ctd_adcp_lag(
+            t_adcp, w_adcp, ctd, lat_deg=-15.0
+        )
+    assert corr > 0.9
+    assert abs(lagdt_days * 86400.0 - tau_s) <= 1.0
+
+
+def test_estimate_ctd_adcp_lag_coarse_disabled_warns_at_edge():
+    # With the coarse pass off, a large offset pins the fine search at the
+    # window edge and the existing tripwire must still fire.
+    tau_s = 186.0
+    t_adcp, w_adcp, ctd = _synthetic_cast(tau_s)
+    with pytest.warns(UserWarning, match="window edge"):
+        lag_scans, _, _ = estimate_ctd_adcp_lag(
+            t_adcp, w_adcp, ctd, lat_deg=-15.0, coarse_window_s=0.0
+        )
+    assert abs(lag_scans) == 150
+
+
+# --- ctd_in_water_window (loadctd.m p.cut) / cut_ensembles (cutstruct) ---
+
+from ladcp.ingestion.ctd import ctd_in_water_window
+from ladcp.ingestion.rdi import cut_ensembles
+
+
+def _deck_cast_ctd():
+    """On deck (p ~ -0.2) -> descent -> bottom -> ascent -> on deck."""
+    t0 = 2457000.0
+    n_deck, n_cast = 50, 200
+    p = np.concatenate([
+        np.full(n_deck, -0.2),                     # pre-deployment
+        np.linspace(0.5, 4000.0, n_cast),          # descent
+        np.linspace(4000.0, 0.5, n_cast),          # ascent
+        np.full(n_deck, -0.2),                     # recovered
+    ])
+    t = t0 + np.arange(len(p)) / 86400.0
+    return CTDTimeSeries(
+        time_julian=t, pressure_dbar=p,
+        temp_c=np.full(len(p), 5.0), salinity=np.full(len(p), 35.0),
+    ), t0, n_deck, n_cast
+
+
+def test_ctd_in_water_window_excludes_deck():
+    ctd, t0, n_deck, n_cast = _deck_cast_ctd()
+    t_start, t_end = ctd_in_water_window(ctd)
+    # start: last scan before pressure max with 0 < p < 10 dbar
+    # (descent covers 0.5..4000 in n_cast steps -> p < 10 only at its head)
+    assert t_start >= ctd.time_julian[n_deck]
+    assert t_start < ctd.time_julian[n_deck + 2]
+    # end: first scan after max with 0 < p < 10 dbar (ascent tail)
+    assert t_end > ctd.time_julian[n_deck + 2 * n_cast - 3]
+    assert t_end <= ctd.time_julian[n_deck + 2 * n_cast - 1]
+
+
+def test_ctd_in_water_window_no_surface_scans_falls_back():
+    # Record starts already deep and ends deep: full-record fallback.
+    n = 100
+    ctd = CTDTimeSeries(
+        time_julian=2457000.0 + np.arange(n) / 86400.0,
+        pressure_dbar=np.concatenate(
+            [np.linspace(500.0, 4000.0, n // 2),
+             np.linspace(4000.0, 500.0, n - n // 2)]),
+        temp_c=np.full(n, 5.0), salinity=np.full(n, 35.0),
+    )
+    t_start, t_end = ctd_in_water_window(ctd)
+    assert t_start == ctd.time_julian[0]
+    assert t_end == ctd.time_julian[-1]
+
+
+def test_cut_ensembles_slices_all_ensemble_axes():
+    rdi = _make_rdi(nbin=6, nens=8)
+    rdi.u[:] = np.arange(8)[None, :]
+    keep = np.zeros(8, dtype=bool)
+    keep[2:6] = True
+    out = cut_ensembles(rdi, keep)
+    assert out.nens == 4
+    assert out.u.shape == (6, 4)
+    np.testing.assert_allclose(out.u[0], [2, 3, 4, 5])
+    assert out.heading.shape == (4,)
+    assert out.echo.shape == (6, 4, 4)
+    assert out.btrack_vel_ms.shape == (4, 4)
+    np.testing.assert_allclose(out.time_julian, rdi.time_julian[keep])
+    # original untouched
+    assert rdi.nens == 8
+    assert rdi.u.shape == (6, 8)
+
+
 # --- interval-based time fallback (I7N-style cnv with no time column) ---
 
 

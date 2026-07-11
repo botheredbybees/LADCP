@@ -1,11 +1,37 @@
 """Read Teledyne RDI PD0 binary files. Reference: docs/legacy/loadrdi.m."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
 from ladcp.ingestion._pd0 import parse_pd0
 from ladcp.ingestion._types import RDIData
+
+
+def cut_ensembles(rdi: RDIData, keep: np.ndarray) -> RDIData:
+    """Return a copy of rdi restricted to the ensembles where keep is True.
+
+    Port of loadctd.m::cutstruct (line 675), used there to discard all
+    ADCP ensembles outside the CTD in-water time window (loadctd.m:517).
+    """
+    keep = np.asarray(keep, dtype=bool)
+    if keep.shape != (rdi.nens,):
+        raise ValueError(
+            f"keep mask shape {keep.shape} != (nens,) = ({rdi.nens},)")
+    return replace(
+        rdi,
+        u=rdi.u[:, keep], v=rdi.v[:, keep],
+        w=rdi.w[:, keep], e=rdi.e[:, keep],
+        heading=rdi.heading[keep], pitch=rdi.pitch[keep],
+        roll=rdi.roll[keep], time_julian=rdi.time_julian[keep],
+        temp_c=rdi.temp_c[keep], sound_vel_ms=rdi.sound_vel_ms[keep],
+        echo=rdi.echo[:, keep, :], corr=rdi.corr[:, keep, :],
+        pg=rdi.pg[:, keep, :],
+        btrack_range_m=rdi.btrack_range_m[:, keep],
+        btrack_vel_ms=rdi.btrack_vel_ms[:, keep],
+        nens=int(keep.sum()),
+    )
 
 
 def best_ul_shift(
