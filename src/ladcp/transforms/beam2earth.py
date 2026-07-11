@@ -107,6 +107,30 @@ def reconstruct_3beam(
     return beams, n_3beam
 
 
+def janus_error_velocity(
+    b1: np.ndarray,
+    b2: np.ndarray,
+    b3: np.ndarray,
+    b4: np.ndarray,
+    theta_deg: float,
+) -> np.ndarray:
+    """Janus error velocity VE = (b1 + b2 - b3 - b4) / (4 cos(theta)).
+
+    loadrdi.m::b2earth Step 4 (lines 1741/1747; VES = VZS = 1/(4 C30)) --
+    identical for both beam orientations. The redundancy residual of the
+    4-beam solution: large |VE| flags inhomogeneous flow or noise-driven
+    cells (in weak scattering, bins beyond the effective range return
+    plausible-looking velocity from pure noise with |VE| ~ 0.7 m/s).
+    NaN where any beam is missing -- 3-beam-reconstructed cells have
+    VE = 0 by construction, so both are exempt from the elim edit,
+    matching MATLAB.
+    """
+    return (
+        np.asarray(b1, dtype=np.float64) + np.asarray(b2, dtype=np.float64)
+        - np.asarray(b3, dtype=np.float64) - np.asarray(b4, dtype=np.float64)
+    ) / (4.0 * np.cos(np.radians(theta_deg)))
+
+
 def beam2earth(
     b1: np.ndarray,
     b2: np.ndarray,

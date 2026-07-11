@@ -47,6 +47,95 @@ def edit_sidelobes(
     return dataclasses.replace(ens, weight=new_weight)
 
 
+def edit_error_velocity(
+    u: np.ndarray,
+    v: np.ndarray,
+    w: np.ndarray,
+    e: np.ndarray,
+    *,
+    elim: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """NaN velocities where the Janus error velocity exceeds elim.
+
+    Port of loadrdi.m lines 1117-1125 (p.elim, default 0.5 m/s): |e| >
+    elim sets u, v, w to NaN. Applied per instrument right after the
+    beam->earth transform, and to the bottom track (lines 1126-1134).
+    NaN error velocity (missing beam / 3-beam cell, where e = 0 by
+    construction) never trips the threshold, matching MATLAB find().
+
+    Essential in weak scattering: bins beyond the effective range return
+    noise-driven velocities that pass finite-ness checks but carry
+    |e| ~ 0.7 m/s (A16N 2013 WH150 deep casts: ~half of bins 26-40).
+    """
+    bad = np.abs(e) > elim
+    out = []
+    for a in (u, v, w):
+        a = np.asarray(a, dtype=np.float64).copy()
+        a[bad] = np.nan
+        out.append(a)
+    return out[0], out[1], out[2]
+
+
+def edit_ppi(
+    ens: EnsembleData,
+    *,
+    npng: int = 1,
+    beam_angle_deg: float = 20.0,
+    layer_thickness_m: float = 180.0,
+    max_hab_m: float = 1000.0,
+    zbottom: float | None = None,
+    ss: np.ndarray | None = None,
+) -> EnsembleData:
+    """Mask downlooker bins contaminated by previous-ping interference.
+
+    Port of edit_data.m lines 208-262 (p.edit_PPI, default OFF in LDEO
+    and here): in deep casts, the PREVIOUS ping's seabed echo arrives
+    during the current ping's receive window, contaminating a
+    layer_thickness_m-thick band centred SS*dt/2*cos(beam_angle) above
+    the seabed (~1200 m for a 1.6 s ping interval) -- mid-water, not
+    near-bottom. Ensembles whose ping interval puts the band more than
+    max_hab_m above the seabed are left alone. DL bins only, matching
+    the MATLAB comment "only implemented for the downlooker".
+
+    ss, when given, is a per-ensemble sound-speed array; the mean over
+    ensembles below the expected PPI depth is used (edit_data.m uses the
+    CTD-profile mean below that depth; "using 1500 m/s would be nearly
+    as good"). npng = pings per ensemble (fixed leader), the
+    Alford multi-ping fix at line 223.
+    """
+    dt = np.diff(ens.time_jul) * 86400.0 / max(npng, 1)
+    if zbottom is None:
+        derived = float(np.nanmax(-ens.z + ens.hbot))
+        if not math.isfinite(derived):
+            return ens
+        zbottom = derived
+
+    ss_mean = 1500.0
+    if ss is not None:
+        guess_z = -zbottom + 1500.0 * float(np.nanmean(dt)) / 2.0
+        deep = ens.z < guess_z
+        if deep.any():
+            m = float(np.nanmean(np.asarray(ss, dtype=np.float64)[deep]))
+            if np.isfinite(m):
+                ss_mean = m
+
+    ppi_hab = ss_mean * dt / 2.0 * math.cos(math.radians(beam_angle_deg))
+    ppi_hab = np.where(ppi_hab > max_hab_m, np.inf, ppi_hab)
+    ppi_min_z = -zbottom + ppi_hab - layer_thickness_m / 2.0
+    ppi_max_z = ppi_min_z + layer_thickness_m
+
+    # dt[k-1] applies to ensemble k (edit_data.m: izm(b,2:end) ... +1)
+    new_weight = ens.weight.copy()
+    izm_dl = ens.izm[ens.izd][:, 1:]
+    bad = (izm_dl > ppi_min_z[None, :]) & (izm_dl < ppi_max_z[None, :])
+    w_dl = new_weight[ens.izd]
+    w_tail = w_dl[:, 1:]
+    w_tail[bad] = np.nan
+    w_dl[:, 1:] = w_tail
+    new_weight[ens.izd] = w_dl
+    return dataclasses.replace(ens, weight=new_weight)
+
+
 def edit_large_velocities(
     ens: EnsembleData,
     *,

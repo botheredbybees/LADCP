@@ -31,9 +31,11 @@ from ladcp.ingestion.ctd import (
 from ladcp.ingestion.rdi import best_ul_shift, cut_ensembles, load_rdi
 from ladcp.qa.editing import (
     build_ldeo_weights,
+    edit_error_velocity,
     edit_large_velocities,
     edit_mask_bins,
     edit_outliers,
+    edit_ppi,
     edit_sidelobes,
     edit_w_outliers,
     tilt_from_pitch_roll,
@@ -46,7 +48,7 @@ from ladcp.solution.inverse import (
     prepare_superensembles,
     rotup2down,
 )
-from ladcp.transforms.beam2earth import beam2earth, uvrot
+from ladcp.transforms.beam2earth import beam2earth, janus_error_velocity, uvrot
 from ladcp.transforms.soundspeed import (
     apply_sound_speed_correction,
     depth_to_pressure,
@@ -67,6 +69,9 @@ class CastParams:
     sadcp_u: np.ndarray | None = None
     sadcp_v: np.ndarray | None = None
     sadcp_err: np.ndarray | None = None
+    edit_ppi: bool = False             # previous-ping-interference edit
+    edit_ppi_layer_thickness: float = 180.0   # (edit_data.m defaults)
+    edit_ppi_max_hab: float = 1000.0
 
     @classmethod
     def from_ldeo_nc(cls, path: Path | str, **overrides) -> CastParams:
@@ -103,6 +108,18 @@ class CastParams:
                 u_ship=float(ds.uship) if hasattr(ds, "uship") else None,
                 v_ship=float(ds.vship) if hasattr(ds, "vship") else None,
             )
+            # Per-cast PPI editing, recorded verbatim in some LDEO_IX
+            # outputs (A16N 2013 IX_8: edit_PPI/edit_PPI_layer_thickness/
+            # edit_PPI_max_hab global attributes).
+            ppi = getattr(ds, "edit_PPI", None)
+            if ppi is not None:
+                kw["edit_ppi"] = bool(float(ppi))
+                thick = getattr(ds, "edit_PPI_layer_thickness", None)
+                if thick is not None:
+                    kw["edit_ppi_layer_thickness"] = float(thick)
+                hab = getattr(ds, "edit_PPI_max_hab", None)
+                if hab is not None:
+                    kw["edit_ppi_max_hab"] = float(hab)
             if "u_sadcp" in ds.variables:
                 def _var(name: str) -> np.ndarray:
                     return np.ma.filled(
@@ -157,6 +174,10 @@ def process_cast(
         rdi.u, rdi.v, rdi.w, rdi.e,
         rdi.heading, rdi.pitch, rdi.roll, theta, **dl_kw,
     )
+    u_dl, v_dl, w_dl = edit_error_velocity(
+        u_dl, v_dl, w_dl,
+        janus_error_velocity(rdi.u, rdi.v, rdi.w, rdi.e, theta),
+    )
     u_dl, v_dl = uvrot(u_dl, v_dl, -params.drot_deg)
 
     # CTD-ADCP clock offset (loadctd.m besttlag equivalent).
@@ -182,6 +203,10 @@ def process_cast(
     u_ul, v_ul, w_ul = beam2earth(
         rdi_ul.u, rdi_ul.v, rdi_ul.w, rdi_ul.e,
         rdi_ul.heading, rdi_ul.pitch, rdi_ul.roll, theta, **ul_kw,
+    )
+    u_ul, v_ul, w_ul = edit_error_velocity(
+        u_ul, v_ul, w_ul,
+        janus_error_velocity(rdi_ul.u, rdi_ul.v, rdi_ul.w, rdi_ul.e, theta),
     )
     u_ul, v_ul = uvrot(u_ul, v_ul, -params.drot_deg)
     _, izm_ul_pos = assign_bin_depths(
@@ -218,6 +243,12 @@ def process_cast(
         rdi.btrack_vel_ms[2], rdi.btrack_vel_ms[3],
         rdi.heading, rdi.pitch, rdi.roll, theta, **dl_kw,
     )
+    bt_u, bt_v, bt_w = edit_error_velocity(
+        bt_u, bt_v, bt_w,
+        janus_error_velocity(rdi.btrack_vel_ms[0], rdi.btrack_vel_ms[1],
+                             rdi.btrack_vel_ms[2], rdi.btrack_vel_ms[3],
+                             theta),
+    )
     bt_u, bt_v = uvrot(bt_u, bt_v, -params.drot_deg)
     bvel = np.stack([bt_u, bt_v, bt_w], axis=1)
 
@@ -241,6 +272,12 @@ def process_cast(
         ens, ss=ss, sv_dl=rdi.sound_vel_ms, sv_ul=rdi_ul.sound_vel_ms[ul_idx],
     )
     ens = edit_sidelobes(ens, theta_deg=theta, cell_size_m=rdi.blen_m)
+    if params.edit_ppi:
+        ens = edit_ppi(
+            ens, npng=rdi.npng, beam_angle_deg=theta, ss=ss,
+            layer_thickness_m=params.edit_ppi_layer_thickness,
+            max_hab_m=params.edit_ppi_max_hab,
+        )
     ens = edit_large_velocities(ens)
     ens = edit_w_outliers(ens)
     ens = edit_mask_bins(

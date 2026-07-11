@@ -295,3 +295,98 @@ def test_weights_non_pinging_ensembles_masked_per_block():
     wt = build_ldeo_weights(cm, ts, pitch, roll, v, w, izd, izu)
     assert np.all(np.isnan(wt[izu][:, 10:13]))
     assert np.isfinite(wt[izd][:, 10:13]).all()  # DL block untouched
+
+
+# --- edit_error_velocity (loadrdi.m elim, lines 1117-1134) ---
+
+from ladcp.qa.editing import edit_error_velocity
+from ladcp.transforms.beam2earth import janus_error_velocity
+
+
+def test_error_velocity_edit_masks_large_e():
+    u = np.ones((3, 4))
+    v = np.ones((3, 4)) * 2
+    w = np.ones((3, 4)) * 3
+    e = np.zeros((3, 4))
+    e[1, 2] = 0.7
+    e[2, 0] = -0.9
+    u2, v2, w2 = edit_error_velocity(u, v, w, e)
+    for a in (u2, v2, w2):
+        assert np.isnan(a[1, 2]) and np.isnan(a[2, 0])
+        assert np.isfinite(a).sum() == 10
+    # inputs untouched
+    assert np.isfinite(u).all()
+
+
+def test_error_velocity_edit_nan_e_kept():
+    # missing-beam / 3-beam cells (e = NaN or 0) never trip the threshold
+    u = np.ones((2, 2))
+    e = np.array([[np.nan, 0.0], [0.49, 0.51]])
+    u2, _, _ = edit_error_velocity(u, u, u, e)
+    assert np.isfinite(u2[0, 0]) and np.isfinite(u2[0, 1])
+    assert np.isfinite(u2[1, 0]) and np.isnan(u2[1, 1])
+
+
+def test_janus_error_velocity_formula():
+    theta = 20.0
+    b1, b2, b3, b4 = 1.0, 2.0, 0.5, 0.25
+    expected = (b1 + b2 - b3 - b4) / (4.0 * np.cos(np.radians(theta)))
+    got = janus_error_velocity(
+        np.array([b1]), np.array([b2]), np.array([b3]), np.array([b4]), theta)
+    assert abs(got[0] - expected) < 1e-15
+    # homogeneous flow across beams -> zero error velocity
+    same = np.array([0.8])
+    assert abs(janus_error_velocity(same, same, same, same, theta)[0]) < 1e-15
+
+
+# --- edit_ppi (edit_data.m 208-262, previous-ping interference) ---
+
+from ladcp.qa.editing import edit_ppi
+
+
+def _make_ppi_ens(dt_s: float = 1.6, n_ens: int = 5, zbottom: float = 5000.0):
+    """DL-only ensemble set: 3 bins per ensemble, one inside the PPI band.
+
+    PPI band centre = -zbottom + 1500*dt/2*cos(20 deg) (~ -zbottom + 1128 m
+    for dt=1.6 s); band half-width 90 m.
+    """
+    hab_centre = 1500.0 * dt_s / 2.0 * np.cos(np.radians(20.0))
+    z_in = -zbottom + hab_centre           # inside the band
+    z_above = -zbottom + hab_centre + 200  # above the band
+    z_below = -zbottom + 50                # near bottom, below the band
+    izm = np.tile(np.array([[z_above], [z_in], [z_below]]), (1, n_ens))
+    z = np.full(n_ens, -3000.0)
+    ens = _make_ens(izm, z, hbot=np.full(n_ens, zbottom - 3000.0))
+    ens = ens.__class__(**{**ens.__dict__,
+                           'time_jul': np.arange(n_ens) * dt_s / 86400.0})
+    return ens
+
+
+def test_ppi_masks_band_dl_only():
+    # band centre ~1128 m above bottom needs max_hab > that (A16N used 1200)
+    ens = _make_ppi_ens()
+    out = edit_ppi(ens, npng=1, beam_angle_deg=20.0, max_hab_m=1200.0)
+    # ensemble 0 has no dt -> untouched (edit_data.m starts at ensemble 2)
+    assert out.weight[1, 0] == 1.0
+    # band bin masked for ensembles 2..end
+    assert np.all(np.isnan(out.weight[1, 1:]))
+    # bins outside the band untouched
+    assert np.all(out.weight[0, :] == 1.0)
+    assert np.all(out.weight[2, :] == 1.0)
+    # input not mutated
+    assert np.all(ens.weight == 1.0)
+
+
+def test_ppi_max_hab_disables_edit():
+    # band centre ~1128 m above bottom > max_hab 1000 -> no edit at all
+    ens = _make_ppi_ens(dt_s=1.6)
+    out = edit_ppi(ens, npng=1, beam_angle_deg=20.0, max_hab_m=1000.0)
+    assert np.all(np.isfinite(out.weight))
+
+
+def test_ppi_multi_ping_dt_scaling():
+    # npng=2 halves the effective ping interval -> band centre ~564 m
+    # above bottom; the bin at ~1128 m is no longer masked
+    ens = _make_ppi_ens(dt_s=1.6)
+    out = edit_ppi(ens, npng=2, beam_angle_deg=20.0)
+    assert np.all(np.isfinite(out.weight[1, :]))
