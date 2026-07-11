@@ -9,10 +9,11 @@ correlation) against the archived profiles on well-observed bins
 
 Anti-overfitting context: the pipeline was tuned against exactly one cast
 (P16N 2015 003). This script exists to measure it on casts and cruises it
-has never seen. NOTE: archived LDEO runs typically used a SADCP
-constraint we cannot reconstruct per cast, so a modest RMSE penalty vs
-the P16N 003 benchmark (which had a SADCP fixture) is expected; uship /
-vship barotropic constraints are still applied from the reference attrs.
+has never seen. When the archived run used a SADCP constraint, ladcp2cdf
+embedded the exact profile in the reference NC (z_sadcp/u_sadcp/...) and
+CastParams.from_ldeo_nc reads it back, so the rerun applies the same
+constraint set as the archive; uship/vship barotropic constraints are
+likewise read from the reference attrs.
 
 Usage:
   uv run python scripts/validate_multicast.py \

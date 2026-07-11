@@ -87,8 +87,10 @@ class CastParams:
 
         ds = netCDF4.Dataset(str(path))
         try:
-            drot = float(getattr(ds, "GEN_Magnetic_deviation_deg",
-                                 getattr(ds, "drot")))
+            drot_attr = getattr(ds, "GEN_Magnetic_deviation_deg", None)
+            if drot_attr is None:
+                drot_attr = ds.drot
+            drot = float(drot_attr)
             lat = float(np.asarray(ds.variables["lat"][:]).ravel()[0]) \
                 if "lat" in ds.variables else float(ds.lat)
             spe = getattr(ds, "LADCP_dn_conf_single_ping_acc", None)
