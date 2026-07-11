@@ -332,6 +332,85 @@ def _read_generic_ascii(path: Path, **kwargs) -> CTDTimeSeries:
     )
 
 
+def _uh_timeseries_columns(path: Path) -> dict[str, int] | None:
+    """Detect the UH/SOEST CLIVAR-archive CTD time-series format.
+
+    These files (NCEI raw-level0 'ctd_timeseries_SSSSS_CCC_gps.txt', e.g.
+    A16N 2013 accession 0205839) have two '#' comment lines -- the first
+    naming the columns (seconds pressure temperature salinity ...
+    timestamp latitude longitude), the second giving units -- followed by
+    plain numeric rows. Returns {name: column index} when the first line
+    matches, else None.
+    """
+    with open(path, 'rb') as fh:
+        first = fh.readline(4096).decode('ascii', errors='replace')
+    if not first.startswith('#'):
+        return None
+    names = [t.lower() for t in first.lstrip('#').split()]
+    col = {n: i for i, n in enumerate(names)}
+    if 'pressure' in col and ('timestamp' in col or 'seconds' in col):
+        return col
+    return None
+
+
+def _read_uh_timeseries(
+    path: Path,
+    col: dict[str, int],
+    *,
+    dday_yearbase: int = 2000,
+    time_start_julian: float | None = None,
+    **_ignored,
+) -> CTDTimeSeries:
+    """Read a UH/SOEST CLIVAR-archive CTD time series (see _uh_timeseries_columns).
+
+    Absolute time comes from the 'timestamp' column -- GPS decimal days
+    (dday) since dday_yearbase Jan 1 00:00 (A16N 2013 uses yearbase
+    2000). GPS timestamps update in ~1 s steps while scans are 0.5 s, so
+    the smooth elapsed 'seconds' column carries the per-scan spacing and
+    the GPS dday only anchors it (median offset). Without a timestamp
+    column, time_start_julian is required to anchor the elapsed axis.
+    """
+    arr = np.loadtxt(path, comments='#')
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    n = arr.shape[0]
+
+    def _get(name: str) -> np.ndarray | None:
+        i = col.get(name)
+        return arr[:, i] if i is not None and i < arr.shape[1] else None
+
+    pressure = _get('pressure')
+    if pressure is None:
+        raise ValueError(f"No pressure column in {path}")
+    elapsed = _get('seconds')
+    dday = _get('timestamp')
+    if dday is not None:
+        base = _to_julian(dday_yearbase, 1, 1, 0.0)
+        if elapsed is not None:
+            anchor = base + float(np.nanmedian(dday - elapsed / 86400.0))
+            time_julian = anchor + elapsed / 86400.0
+        else:
+            time_julian = base + dday
+    elif elapsed is not None and time_start_julian is not None:
+        time_julian = time_start_julian + elapsed / 86400.0
+    else:
+        raise ValueError(
+            f"{path}: no 'timestamp' (dday) column and no time_start_julian "
+            "anchor for the elapsed 'seconds' column"
+        )
+
+    temp = _get('temperature')
+    sal = _get('salinity')
+    return CTDTimeSeries(
+        time_julian=time_julian,
+        pressure_dbar=pressure,
+        temp_c=temp if temp is not None else np.full(n, np.nan),
+        salinity=sal if sal is not None else np.full(n, np.nan),
+        lat=_get('latitude'),
+        lon=_get('longitude'),
+    )
+
+
 def _detect_binary_by_filesize(path: Path, data_offset: int, header_info: dict) -> None:
     """Override file_type to 'binary' when the data section size matches nvalues×nquan×4.
 
@@ -351,7 +430,9 @@ def _detect_binary_by_filesize(path: Path, data_offset: int, header_info: dict) 
 
 
 def load_ctd(path: Path | str, **kwargs) -> CTDTimeSeries:
-    """Load a CTD time-series file; auto-detect SBE binary, SBE ASCII, or generic ASCII.
+    """Load a CTD time-series file; auto-detects SBE binary, SBE ASCII,
+    UH/SOEST CLIVAR-archive time series (named-column '#' header, GPS dday
+    timestamps -- see _read_uh_timeseries), or generic ASCII.
 
     For generic ASCII files, kwargs configure the reader:
         skip_rows (int): header lines to skip (default 0)
@@ -379,6 +460,9 @@ def load_ctd(path: Path | str, **kwargs) -> CTDTimeSeries:
             return _read_generic_ascii(path, **kwargs)
     except ValueError as e:
         if "No *END* marker found" in str(e):
+            uh_cols = _uh_timeseries_columns(path)
+            if uh_cols is not None:
+                return _read_uh_timeseries(path, uh_cols, **kwargs)
             return _read_generic_ascii(path, **kwargs)
         raise
 

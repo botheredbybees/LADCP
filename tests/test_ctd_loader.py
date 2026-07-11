@@ -538,6 +538,67 @@ def test_cut_ensembles_slices_all_ensemble_axes():
     assert rdi.u.shape == (6, 8)
 
 
+# --- UH/SOEST CLIVAR-archive time series (A16N-style named-column txt) ---
+
+
+def _make_uh_timeseries(tmp_path: Path) -> Path:
+    header = (
+        "# seconds pressure temperature salinity transmissometer Fluorometer"
+        " potential_temperature Sigma_Theta      timestamp    latitude"
+        "   longitude\n"
+        "# elapsed     dbar        degC      psu             VDC        none"
+        "                  degC       kg/m3           dday     degrees"
+        "     degrees\n"
+    )
+    # GPS dday updates in ~1 s steps while scans are 0.5 s: rows 0/1 share
+    # a timestamp, as do rows 2/3.
+    rows = (
+        "      0.0     10.0     11.7431  35.0381  0.05 0.0 11.7 -0.44"
+        "  4964.16113426    63.11693   -19.99953\n"
+        "      0.5     11.0     11.7000  35.0300  0.05 0.0 11.7 -0.44"
+        "  4964.16113426    63.11693   -19.99953\n"
+        "      1.0     12.0     11.6900  35.0200  0.05 0.0 11.7 -0.44"
+        "  4964.16114583    63.11694   -19.99954\n"
+        "      1.5     13.0     11.6800  35.0100  0.05 0.0 11.7 -0.44"
+        "  4964.16114583    63.11694   -19.99954\n"
+    )
+    p = tmp_path / "ctd_timeseries_00003_002_gps.txt"
+    p.write_text(header + rows)
+    return p
+
+
+def test_uh_timeseries_loads_with_absolute_time(tmp_path):
+    p = _make_uh_timeseries(tmp_path)
+    ctd = load_ctd(p)
+    assert len(ctd.time_julian) == 4
+    # spacing follows the smooth elapsed column (0.5 s), not the steppy
+    # GPS timestamps (tolerance = float64 quantization at absolute-Julian
+    # magnitude, ~5e-5 s)
+    np.testing.assert_allclose(
+        np.diff(ctd.time_julian) * 86400.0, 0.5, atol=5e-5)
+    # anchored at yearbase-2000 dday: within one GPS step (~1 s) of the
+    # first timestamp
+    expected0 = _to_julian(2000, 1, 1, 0.0) + 4964.16113426
+    assert abs(ctd.time_julian[0] - expected0) * 86400.0 < 1.5
+    np.testing.assert_allclose(ctd.pressure_dbar, [10.0, 11.0, 12.0, 13.0])
+    np.testing.assert_allclose(ctd.temp_c[0], 11.7431)
+    np.testing.assert_allclose(ctd.salinity[0], 35.0381)
+    assert ctd.lat is not None and abs(ctd.lat[0] - 63.11693) < 1e-9
+    assert ctd.lon is not None and abs(ctd.lon[0] + 19.99953) < 1e-9
+
+
+def test_uh_timeseries_without_timestamp_needs_anchor(tmp_path):
+    header = "# seconds pressure temperature\n# elapsed dbar degC\n"
+    p = tmp_path / "uh_noanchor.txt"
+    p.write_text(header + "0.0 10.0 5.0\n0.5 11.0 5.0\n")
+    with pytest.raises(ValueError, match="time_start_julian"):
+        load_ctd(p)
+    ctd = load_ctd(p, time_start_julian=2456509.0)
+    assert abs(ctd.time_julian[0] - 2456509.0) < 1e-12
+    # 5e-5 s = float64 quantization at absolute-Julian magnitude
+    assert abs((ctd.time_julian[1] - ctd.time_julian[0]) * 86400.0 - 0.5) < 5e-5
+
+
 # --- interval-based time fallback (I7N-style cnv with no time column) ---
 
 
