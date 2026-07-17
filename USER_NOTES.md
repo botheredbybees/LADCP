@@ -4,11 +4,11 @@ For shipboard and shore-based data officers working with LADCP data.
 
 ## Current State
 
-**This software is not yet operational for end-to-end production processing.**
+**This software is not yet operational for end-to-end production processing via CLI.**
 
-The core scientific pipeline — ingestion, coordinate transforms, QA editing, and the inverse velocity solver — is implemented and produces velocity profiles for full-water-column casts. However, the CLI (`ladcp process`, `ladcp check`) is not yet wired to the pipeline, and there is no NetCDF output stage. Profiles can be produced by calling the Python API directly (see example below).
+The core scientific pipeline — ingestion, coordinate transforms, QA editing, the inverse velocity solver, and NetCDF output — is implemented and produces validated velocity profiles for full-water-column casts (`ladcp.pipeline.process_cast()` runs it end-to-end). However, the CLI (`ladcp process`, `ladcp check`) is still a stub and not yet wired to the pipeline.
 
-Validation against LDEO MATLAB reference output gives u RMSE ≈ 0.07 m/s. The 0–1000 m range matches well (r ≈ +0.90). A known issue at 1000–2000 m is under active investigation. For production cruise processing, continue using LDEO_IX MATLAB software until the RMSE target (< 0.05 m/s) is met.
+Validation against LDEO MATLAB reference output on the primary tuning cast (P16N 2015, cast 003) meets both RMSE targets: u 0.045 m/s, v 0.033 m/s (target < 0.05 m/s). Run cross-cruise on two cruises the pipeline never saw during development: I7N 2018 (124 casts, 53 pass both targets) and A16N 2013 (95 casts, 15 pass both — deep casts >4 km are a known, actively-investigated failure mode; see `test_data/2013_A16N/DOWNLOAD_NOTES.md`). See `docs/HANDOVER.md` for the current status. For production cruise processing, continue using LDEO_IX MATLAB software until the CLI is wired up and the A16N deep-cast issue is resolved.
 
 ## Installation
 
@@ -138,9 +138,11 @@ print(f"Ensembles with bottom track: {np.isfinite(d.btrack_range_m).mean():.0%}"
 ## Running Tests
 
 ```bash
-uv run pytest                              # unit tests only
-TEST_DATA_DIR=test_data uv run pytest     # + integration tests (requires raw files)
+uv run python -m pytest                              # unit tests only
+TEST_DATA_DIR=test_data uv run python -m pytest      # + integration tests (requires raw files)
 ```
+
+`uv run pytest` (without `python -m`) fails on some machines with a broken entry-point shim.
 
 ## Docker
 

@@ -6,7 +6,7 @@ Context for physical oceanographers evaluating or contributing to this toolkit.
 
 A Python re-implementation of the LDEO LADCP processing workflow, targeting the same outputs as the MATLAB software used for GO-SHIP and similar hydrographic cruises. The goal is to reproduce known-good processed results numerically before adding any new capabilities.
 
-The validation dataset is **2015 P16N, cast 003**, processed by A.M. Thurnherr (LDEO). The reference output `test_data/2015_P16N/003.nc` is the benchmark this software currently works against.
+The primary tuning dataset was **2015 P16N, cast 003**, processed by A.M. Thurnherr (LDEO); the reference output `test_data/2015_P16N/003.nc` is the cast the pipeline's design decisions were validated against. To guard against overfitting to that one cast, the pipeline has since been run against two entire cruises it never saw during development — **I7N 2018** (124 casts) and **A16N 2013** (95 casts) — plus spot checks against **S4P 2018**. See "Validation Status" below for cross-cruise numbers.
 
 ## What Is Implemented
 
@@ -14,65 +14,100 @@ The full processing pipeline is implemented end-to-end:
 
 **Ingestion:**
 - `load_rdi()` — reads Teledyne RDI Workhorse PD0 binary files (`.000`)
-- `load_ctd()` — reads SeaBird CNV files (ASCII and binary formats), parsing pressure, temperature, salinity, and optionally GPS lat/lon
-- `assign_bin_depths()` — converts ADCP bin ranges to absolute water depths using CTD pressure
+- `load_ctd()` — reads SeaBird CNV files (ASCII and binary formats) and UH/CLIVAR-archive CTD time-series (A16N-style, GPS-dday time base), parsing pressure, temperature, salinity, and optionally GPS lat/lon
+- `assign_bin_depths()` — converts ADCP bin ranges to absolute water depths using CTD pressure (Saunders p→z)
+- `estimate_ctd_adcp_lag()` — measures the CTD-ADCP clock offset (besttlag equivalent)
 - `compute_ship_velocity()` — derives ship velocity from GPS position time series
+- SBE hex time-series decoder and SADCP NetCDF loader (shipboard ADCP profiles for the inverse constraint)
 
 **Coordinate transforms:**
-- `beam2earth()` — converts beam-coordinate ADCP velocities to Earth frame using heading, pitch, roll; supports the gimbaled heading correction (Janus geometry, RDI Workhorse convention)
+- `beam2earth()` — converts beam-coordinate ADCP velocities to Earth frame using heading, pitch, roll; supports the gimbaled heading correction (Janus geometry, RDI Workhorse convention) and 3-beam (single-missing-beam) reconstruction
 - `uvrot()` — rotates East/North velocities for magnetic declination
+- Sound-speed correction (`sounds.m`/`press.m`/`getdpthi.m` ports)
 
 **Quality editing:**
 - `edit_sidelobes()` — masks ADCP bins contaminated by acoustic sidelobes from the surface and bottom (LDEO `edit_data.m` convention)
 - `edit_large_velocities()` — removes bins with horizontal speed > 2.5 m/s
+- `edit_error_velocity()` — removes bins with anomalous error (4th-beam) velocity ("elim" editing)
+- `edit_ppi()` — previous-ping-interference editing (`edit_data.m`)
 - `edit_w_outliers()` — removes bins where vertical velocity deviates anomalously from near-instrument reference bins
+- `build_ldeo_weights()` — full LDEO weight construction (correlation, echo, tilt, non-pinging removal)
 
 **Inverse velocity solution:**
 - `prepare_superensembles()` — depth-window averaging into super-ensembles with reference-bin subtraction; replicates `prepinv.m`
-- `compute_inverse()` — constrained least-squares inversion producing `u(z)`, `v(z)` profiles; replicates `getinv.m`; supports GPS barotropic constraint, shipboard ADCP (SADCP) constraint, acoustic bottom-track constraint, and smoothness regularisation
+- `compute_inverse()` — constrained least-squares inversion producing `u(z)`, `v(z)` profiles; replicates `getinv.m`; supports GPS barotropic constraint, shipboard ADCP (SADCP) constraint, acoustic bottom-track constraint, and curvature smoothing (`smoofac`, off by default — matches LDEO's own archived setting on every validated cruise so far)
+- `compute_shear()` — the "old-fashioned" shear-integration comparison method (`getshear2.m`)
+
+**Output:**
+- `write_ladcp_nc()` — NetCDF output writer (`ladcp2cdf.m` equivalent)
 
 ## MATLAB Equivalents
 
 | MATLAB (LDEO_IX) | Python (this toolkit) | Status |
 |---|---|---|
-| `loadrdi.m` — read PD0 binary | `load_rdi()` → `RDIData` | Done |
-| `janus5beam2earth()` (ADCPtools) | `beam2earth()` | Done (gimbaled) |
-| `edit_data.m` — sidelobe / velocity editing | `edit_sidelobes()`, `edit_large_velocities()`, `edit_w_outliers()` | Done |
+| `loadrdi.m` — read PD0 binary, UL/DL merge, weight construction | `load_rdi()`, `best_ul_shift()`, `build_ldeo_weights()` | Done |
+| `janus5beam2earth()` (ADCPtools) | `beam2earth()` | Done (gimbaled, 3-beam) |
+| `edit_data.m` — sidelobe / velocity / PPI editing | `edit_sidelobes()`, `edit_large_velocities()`, `edit_error_velocity()`, `edit_ppi()`, `edit_w_outliers()` | Done |
+| `sounds.m` / `press.m` / `getdpthi.m` scaling | `soundspeed.py` | Done |
 | `getshear2.m` — shear profiles | `compute_shear()` → `ShearProfile` | Done |
 | `prepinv.m` — super-ensemble formation | `prepare_superensembles()` | Done |
-| `getinv.m` — inverse solver | `compute_inverse()` | Done (RMSE work in progress) |
-| `loadctdprof.m` | `load_ctd()`, `assign_bin_depths()` | Done |
-| `loadsadcp.m` | SADCP fixture loader (tests only) | Done |
+| `getinv.m` — inverse solver | `compute_inverse()` | Done (deep-cast A16N divergence under investigation — see below) |
+| `loadctdprof.m` / SBE hex decoder | `load_ctd()`, `assign_bin_depths()`, `sbe_hex.py` | Done |
+| `loadsadcp.m` | SADCP NetCDF loader (`sadcp.py`) | Done |
 | `getbtrack.m` — bottom-track processing | Integrated into `compute_inverse()` | Done |
 | `fixcompass.m` / `checktilt.m` | `uvrot()` (declination only) | Partial |
-| `ladcp2cdf.m` — NetCDF output | Not yet implemented | Planned |
+| `ladcp2cdf.m` — NetCDF output | `write_ladcp_nc()` | Done |
+| CLI (`ladcp process`, `ladcp check`) | `cli.py` | Stub — raises `NotImplementedError` |
 
 The Perl-based LADCP_w software (vertical velocity, VKE) is a separate system not yet targeted.
 
 ## Validation Status
 
-### Current numbers (P16N 2015, cast 003)
+### P16N 2015 cast 003 — both targets MET (2026-07-11)
 
-The inverse solver is running and producing profiles for the full 4500 m cast.
+The 1000–2000 m anti-correlation described in earlier versions of this document is
+resolved (root causes: a `medianan` vs `nanmedian` reference-selection bug, a
+`beam2earth` up/down beam-matrix convention bug, a depth-registration offset, and
+several ported edit/weight-construction steps — full trail in
+`PROGRAMMERS_NOTES.md`). Current numbers, hard test assertions (not `xfail`):
 
-**Overall:** u RMSE = 0.072 m/s (target: < 0.05 m/s for GO-SHIP quality)
+**u RMSE = 0.0450 m/s, v RMSE = 0.0333 m/s** (target < 0.05 m/s), r(u) +0.77.
 
-| Depth range | u correlation | Notes |
-|---|---|---|
-| 0–500 m | +0.91 | Good |
-| 500–1000 m | +0.89 | Good |
-| 1000–1500 m | **−0.39** | Anti-correlated — under investigation |
-| 1500–2000 m | **−0.41** | Anti-correlated — under investigation |
-| 2000–3000 m | +0.20 | Moderate |
-| 3000–4500 m | −0.28 | Noisy |
+### Multi-cruise bulk validation (2026-07-11 to 2026-07-12)
 
-The anti-correlation at 1000–2000 m is the dominant driver of excess RMSE. This depth range corresponds to a portion of the cast where the CTD instrument appears to be drifting rapidly eastward (u_instrument ≈ +0.10–0.15 m/s) relative to the ocean. The inverse solver is not correctly separating instrument motion from ocean velocity at those depths.
+To check the pipeline generalizes rather than being overfit to cast 003, it was run
+against two entire cruises it never saw during development, using each cruise's own
+archived SADCP/barotropic constraints (read back from the reference NetCDF attrs):
 
-**What has been ruled out:** GPS constraint weighting (removing GPS does not change the anti-correlation), bottom-track constraint, adaptive velocity error weighting.
+| Cruise | Casts | Pass both (u,v<0.05) | Pass u only | u RMSE median | u RMSE p90 |
+|---|---|---|---|---|---|
+| I7N 2018 | 124/124 | 53 (43%) | 20 | 0.043 | 0.117 |
+| A16N 2013 | 95/95 | 15 (16%) | 4 | 0.34 | 1.13 |
 
-**What is suspected:** A difference in super-ensemble formation between MATLAB (827 super-ensembles, inferred dz ≈ 8 m) and Python (524 super-ensembles, dz = 16 m hardcoded). This requires MATLAB's intermediate arrays (`di.ru`, `di.izm`) for direct comparison.
+Full per-cast tables: `docs/validation/BULK_VALIDATION_REPORT.md`.
 
-See `docs/superpowers/plans/2026-06-22-rmse-closure.md` for the full investigation writeup and what data is needed to proceed.
+**I7N**: strong evidence the core pipeline generalizes — u median RMSE close to the
+tuning cast's own result on a 124-cast unseen cruise. Two open findings: (1) 10 casts
+"explode" numerically (u RMSE ~10⁶–10¹⁰, a bimodal ill-conditioning failure mode, not
+gradual disagreement — depths 3440–4560 m, mid-pack not deepest); (2) the 41
+"marginal" casts are dominated by v-misses, consistent with the un-ported `lanarrow`
+outlier-trim step (LDEO step 11).
+
+**A16N**: shallow/mid casts (≤4000 m) perform well (19/36 pass u); all 59 casts deeper
+than 4000 m fail (u RMSE ≥ 0.05), with error structure described in
+`test_data/2013_A16N/DOWNLOAD_NOTES.md` — alternating-sign 0.3–0.8 m/s swings through
+a weakly-constrained mid-column. As of 2026-07-17 the following have each been ruled
+out with a direct check (details in `DOWNLOAD_NOTES.md`): the `ps.shear`/`smallfac`
+regularization constraints (dead code paths in the exact LDEO software snapshot used
+for this cruise — confirmed via the archived per-cast `.mat` parameter structs), the
+minimum-norm solve method, mid-column observation-count starvation (Python actually
+retains *more* data per bin than the reference, not less), and ship/winch heave
+contamination (checked three independent ways: CTD descent-rate residual, ADCP tilt,
+and W-anomaly editing rejection rate — none show an elevated signature on the deep
+failing casts). The root mechanism is not yet found; the most concrete open lead is a
+reproducible asymmetry where merging down-cast and up-cast observations helps shallow
+casts a lot but appears to hurt deep casts relative to a (more crudely constrained)
+down-only or up-only solve.
 
 ## Key Scientific Conventions
 
@@ -92,7 +127,7 @@ Clock drift between the DL and UL, and between either ADCP and the CTD, is a fir
 
 ### Super-ensembles
 
-The inverse solver works on "super-ensembles" — depth-window averages that group raw pings spanning ≈16 m of CTD depth change. Within each window, the velocity is referenced to the two DL bins closest to the transducer face, removing the mean instrument velocity. What remains (the super-ensemble relative velocity `ru`) is approximately `u_ocean(z) − mean_u_instrument(window)`. The full-cast inverse then jointly solves for `u_ocean(z)` and `u_instrument(t)` across all windows.
+The inverse solver works on "super-ensembles" — depth-window averages that group raw pings spanning one bin-length of CTD depth change (≈8 m on P16N cast 003; auto-computed per cast from the median bin spacing, matching MATLAB's `avdz` default). Within each window, the velocity is referenced to the two DL bins closest to the transducer face, removing the mean instrument velocity. What remains (the super-ensemble relative velocity `ru`) is approximately `u_ocean(z) − mean_u_instrument(window)`. The full-cast inverse then jointly solves for `u_ocean(z)` and `u_instrument(t)` across all windows.
 
 ### Boundary conditions
 
@@ -102,26 +137,17 @@ The inverse solver accepts three types of external velocity constraints:
 - **GPS barotropic**: GPS position fixes give the time-mean ship velocity over the cast. This constrains the depth-mean of `u_instrument` and is the primary absolute reference for the deep water column.
 - **SADCP**: Shipboard ADCP near-surface measurements (0–300 m typically) constrain `u_ocean` in the surface layer and are used as an additional reference.
 
-## Data Requirements for Continued Validation
-
-To resolve the 1000–2000 m anti-correlation, the following MATLAB intermediate arrays are needed for P16N cast 003:
-
-```matlab
-% Run in MATLAB after processing cast 003 with LDEO_IX
-save('di_cast003.mat', 'di');   % prepinv.m output
-save('dr_cast003.mat', 'dr');   % getinv.m output
-```
-
-Key variables: `di.ru`, `di.rv` (super-ensemble relative velocities, all bins × all SEs), `di.izm` (bin depths), `dr.uctd`, `dr.zctd` (instrument velocity time series).
-
 ## Roadmap
 
 1. ~~Ingestion~~ ✓
 2. ~~Coordinate transforms~~ ✓
 3. ~~QA editing~~ ✓
 4. ~~Shear-based solution~~ ✓
-5. ~~Inverse solution (implemented; RMSE closure in progress)~~ ⚠
-6. NetCDF output (`ladcp2cdf.m` equivalent) — Planned
-7. QA diagnostics and plots — Planned
-8. End-to-end CLI (`ladcp process <cast>`) — Planned
-9. RMSE < 0.05 m/s on P16N cast 003 — **Blocked on MATLAB intermediate arrays**
+5. ~~Inverse solution~~ ✓ — RMSE targets met on P16N cast 003 (u 0.045, v 0.033)
+6. ~~NetCDF output (`ladcp2cdf.m` equivalent)~~ ✓
+7. ~~Multi-cruise bulk validation (I7N, A16N)~~ ✓ — see "Multi-cruise bulk validation" above
+8. A16N deep-cast (>4 km) divergence — **open investigation**, several leads ruled out (see above and `test_data/2013_A16N/DOWNLOAD_NOTES.md`)
+9. I7N "exploded" casts (10/124, numerical ill-conditioning) — **open investigation**
+10. `lanarrow` outlier-trim port (LDEO step 11) — lead candidate for closing the I7N v-RMSE gap
+11. QA diagnostics and plots — Planned
+12. End-to-end CLI (`ladcp process <cast>`) — Planned

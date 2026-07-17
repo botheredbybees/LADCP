@@ -17,20 +17,30 @@ Ingestion  ──▶  Transforms  ──▶  Solution  ──▶  QA / Diagnosti
 src/ladcp/
 ├── __init__.py
 ├── cli.py                   Click app: `ladcp process` and `ladcp check` (stubs)
+├── pipeline.py              process_cast() -- cast-agnostic validated end-to-end pipeline
 ├── ingestion/
 │   ├── __init__.py          exports load_rdi
 │   ├── _pd0.py              parse_pd0(), low-level binary parser
 │   ├── _types.py            RDIData dataclass
-│   ├── rdi.py               load_rdi(path) → RDIData
-│   └── ctd.py               load_ctd(), assign_bin_depths(), compute_ship_velocity()
+│   ├── rdi.py               load_rdi(), cut_ensembles(), best_ul_shift() (UL->DL pairing)
+│   ├── ctd.py               CTDTimeSeries, load_ctd() (SBE ASCII/binary + UH/CLIVAR time-series),
+│   │                        assign_bin_depths(), estimate_ctd_adcp_lag(), compute_ship_velocity()
+│   ├── sbe_hex.py           SBE 24 Hz raw hex time-series decoder + calibration
+│   └── sadcp.py             SADCP NetCDF loader (shipboard ADCP constraint profiles)
 ├── transforms/
-│   └── beam2earth.py        beam2earth() (gimbaled Janus), uvrot()
+│   ├── beam2earth.py        beam2earth() (gimbaled Janus, 3-beam), uvrot()
+│   └── soundspeed.py        sound_speed(), depth_to_pressure(), apply_sound_speed_correction()
 ├── solution/
-│   ├── shear.py             getshear2 equivalent
+│   ├── shear.py             getshear2 equivalent (compute_shear())
 │   └── inverse.py           EnsembleData, SuperEnsemble, prepare_superensembles(),
-│                            compute_inverse(), InverseParams, InverseResult
-└── qa/
-    └── editing.py           edit_sidelobes(), edit_large_velocities(), edit_w_outliers()
+│                            compute_inverse(), InverseParams, InverseResult,
+│                            build_ldeo_weights(), rotup2down/offsetup2down (not wired in)
+├── qa/
+│   ├── editing.py           edit_sidelobes(), edit_large_velocities(), edit_error_velocity(),
+│   │                        edit_ppi(), edit_w_outliers(), edit_mask_bins()
+│   └── diagnostics.py       tilt_heading_plot(), residual_plot()
+└── output/
+    └── nc.py                write_ladcp_nc() -- ladcp2cdf.m equivalent
 ```
 
 ---
@@ -100,8 +110,22 @@ The solved system is `[A_ocean | A_ctd] * [u_ocean; u_ctd_neg] = d`. The solutio
 
 The integration test in `tests/integration/test_inverse_p16n_cast003.py` runs the full pipeline and compares against the LDEO MATLAB reference output `test_data/2015_P16N/003.nc`.
 
-Current status (2026-07-05, `scripts/diag_rmse_strata.py`, convention fix applied,
-rotup2down NOT applied — see below):
+### Current status (2026-07-17)
+
+**Both RMSE targets MET as hard test assertions** (u 0.0450, v 0.0333 m/s, both <0.05;
+r(u) +0.77) — the section below is the historical trail of how the gap was closed and
+is kept for the design rationale, but the numbers in it are superseded. Since that
+milestone the pipeline has also been run cross-cruise on I7N 2018 (124/124 casts, 53
+pass both targets, u median 0.043) and A16N 2013 (95/95 casts, 15 pass both, all 59
+deep >4 km casts fail) — see `docs/HANDOVER.md` and
+`docs/validation/BULK_VALIDATION_REPORT.md` for those numbers, and
+`test_data/2013_A16N/DOWNLOAD_NOTES.md` for the A16N deep-cast investigation (several
+leads ruled out with direct evidence: `ps.shear`/`smallfac` regularization dead-code,
+solve method, observation-count starvation, heave/winch contamination — root cause
+still open). 263 tests total (255 passed / 8 skipped) with `TEST_DATA_DIR` set.
+
+Historical status (2026-07-05, `scripts/diag_rmse_strata.py`, convention fix applied,
+rotup2down NOT applied — see below; kept for context, RMSE numbers superseded above):
 
 | stratum | n | u RMSE | v RMSE | r(u) |
 |---|---|---|---|---|
@@ -125,7 +149,7 @@ instrument's Earth-frame velocity correct using its OWN heading — no compass-a
 hardcode needed. `scripts/diag_ul_dl_rotation.py` (E1) confirms the residual UL→DL
 rotation after the fix is noise-dominated around 0° (circ mean −8° with prior 2 fold
 variability, downcast +5°, upcast −35°, model rho ~0.1–0.2 — i.e. not a coherent
-rotation), not a systematic ~87–90° bias. See `VALIDATION_PLAN.md` for the full
+rotation), not a systematic ~87–90° bias. See `docs/validation/VALIDATION_PLAN.md` for the full
 reasoning that led to retiring the "hardcode +87°" option.
 
 ### rotup2down: implemented, tested, tried, does not help this cast (2026-07-05)
@@ -174,7 +198,7 @@ never applies it alone: `docs/legacy/default.m:223` sets `offsetup2down=1` along
 an iterative loop (`process_cast.m` steps 10–12: form super-ensembles with
 `rotup2down` only → preliminary solve → **re-form** with `offsetup2down` (a velocity
 offset between UL/DL, distinct from `rotup2down`'s heading rotation) using that first
-guess → final solve). Full evidence trail in `VALIDATION_PLAN.md`'s "Phase 1.5"
+guess → final solve). Full evidence trail in `docs/validation/VALIDATION_PLAN.md`'s "Phase 1.5"
 section.
 
 `offsetup2down()` in `src/ladcp/solution/inverse.py` is a faithful port of
@@ -280,11 +304,11 @@ The contaminated Python reference caused a ~0.10 m/s systematic bias and anti-co
 **This section is retired.** The "~87° DL–UL compass offset" was not a compass fault;
 it was a Python `beam2earth` transform-convention bug (wrong up/down beam-matrix sign
 for the uplooker), fixed in commit `f3569c4`. Hardcoding a compass-angle correction
-(previously proposed as "Option A") would have been wrong — see `VALIDATION_PLAN.md`
+(previously proposed as "Option A") would have been wrong — see `docs/validation/VALIDATION_PLAN.md`
 for the evidence. `rotup2down` ("Option B") was subsequently implemented and measured;
 see "rotup2down: implemented, tested, tried, does not help this cast" above for the
 current status (not committed — it worsens RMSE on this cast). The remaining RMSE gap
-at depth is not yet root-caused; see `VALIDATION_PLAN.md` Phase 2 for the solver-only /
+at depth is not yet root-caused; see `docs/validation/VALIDATION_PLAN.md` Phase 2 for the solver-only /
 transform-only harness planned to isolate it.
 
 ---
@@ -297,12 +321,14 @@ Tests live in `tests/`. Three levels of confidence:
 
 **Integration tests** (`tests/integration/`) — real instrument files. Gated by `TEST_DATA_DIR` env var.
 - `test_pd0_p16n_cast003.py` — P16N cast 003 file integrity and header checks
-- `test_inverse_p16n_cast003.py` — full pipeline vs LDEO reference (190 tests total repo-wide with `TEST_DATA_DIR` set, 8 skipped, 2 `xfail` on the RMSE checks)
+- `test_inverse_p16n_cast003.py` — full pipeline vs LDEO reference (263 tests total repo-wide with `TEST_DATA_DIR` set: 255 passed, 8 skipped, 0 xfail — the u/v RMSE checks are hard assertions since 2026-07-11)
 
 Run with:
 ```bash
-TEST_DATA_DIR=test_data uv run pytest
+TEST_DATA_DIR=test_data uv run python -m pytest
 ```
+**Note:** `uv run pytest` (without `python -m`) fails on this machine with a broken
+entry-point shim — always use the `python -m pytest` form above.
 
 ---
 

@@ -4,13 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**In active development.** The `src/ladcp/` package is partially implemented with 142+ passing tests.
+**In active development; scientific core validated.** The `src/ladcp/` package has
+263 tests (255 passed / 8 skipped with `TEST_DATA_DIR` set).
 
-Completed layers: ingestion (PD0 binary, CTD SBE ASCII), coordinate transforms (beam→earth with gimbaled heading and bin-mapping), QA/editing (sidelobe masking, large-velocity rejection), shear solver, and inverse solver (GPS, SADCP, bottom-track, uplooker constraints).
+Completed layers: ingestion (PD0 binary, CTD SBE ASCII/binary, SBE hex time-series,
+UH/CLIVAR CTD time-series, SADCP NetCDF), coordinate transforms (beam→earth with
+gimbaled heading, bin-mapping, 3-beam reconstruction, sound-speed correction),
+QA/editing (sidelobe masking, large/error-velocity rejection, PPI editing), shear
+solver, inverse solver (GPS, SADCP, bottom-track, uplooker constraints), and NetCDF
+output writer (`ladcp2cdf` equivalent).
 
-Open gaps: SADCP NetCDF loader, SBE hex decoder, NetCDF output writer (`ladcp2cdf` equivalent), CLI wiring (stubs exist but raise `NotImplementedError`).
+**Validation:** both RMSE targets MET on the primary tuning cast (P16N 2015 cast 003:
+u 0.045, v 0.033 m/s, hard test assertions). Multi-cruise bulk validation: I7N 2018
+124/124 casts (53 pass both targets; 10 "exploded" casts are an open ill-conditioning
+lead) and A16N 2013 95/95 casts (15 pass both; all 59 deep >4 km casts fail — open
+investigation, see `test_data/2013_A16N/DOWNLOAD_NOTES.md`; several leads already
+ruled out with direct evidence). See `docs/HANDOVER.md` for current session-to-session
+status.
+
+Open gaps: CLI wiring (stubs exist but raise `NotImplementedError`), `lanarrow`
+outlier-trim port, the A16N deep-cast and I7N exploded-cast investigations above.
 
 Stack: Python 3.11, `uv`, `ruff`, `pytest`, `numpy`/`xarray`/`scipy`/`netCDF4`. Docker image scaffolded.
+**Test invocation note:** `uv run pytest` (without `python -m`) fails on some machines
+with a broken entry-point shim — use `uv run python -m pytest` instead.
 
 ## What this project is
 
@@ -76,7 +93,7 @@ Key contents:
 - `001.nc`, `002.nc`, `003.nc` — LDEO_IX processed outputs, **primary validation targets** for the inverse solver. Each file embeds GPS, CTD, SADCP, BT, and per-instrument DL/UL profiles alongside the final `u`/`v`, so they can drive solver tests without raw PD0 data.
 - `processed_uv/` — processed NC outputs for 55+ casts (the full cruise).
 - `CTD/320620180309_ctd.nc` — CCHDO calibrated CTD profiles (118 stations), useful for sound-speed correction.
-- `CTD/00101.hex` etc. — raw SBE 24 Hz hex time-series with GPS; paired `.XMLCON` calibration files. Need SBE hex decoder (not yet implemented) to produce the `001.1Hz` ASCII files that LDEO_IX ingests.
+- `CTD/00101.hex` etc. — raw SBE 24 Hz hex time-series with GPS; paired `.XMLCON` calibration files. `src/ladcp/ingestion/sbe_hex.py` decodes these (implemented, with calibration) to produce the equivalent of the `001.1Hz` ASCII files that LDEO_IX ingests.
 - `SADCP/os75nb/contour/os75nb_short.nc` — OS75 SADCP NetCDF, 17 722 time steps × 60 depth cells, covers full cruise. **Longitude stored offset by −360° — normalize with `lon % 360`.**
 - `set_cast_params.m` — LDEO_IX parameter file; documents raw file naming convention and final processing version (v8: DL+UL IMPed, GPS + SADCP + BT constraints).
 
