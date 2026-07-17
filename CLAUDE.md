@@ -15,15 +15,20 @@ solver, inverse solver (GPS, SADCP, bottom-track, uplooker constraints), and Net
 output writer (`ladcp2cdf` equivalent).
 
 **Validation:** both RMSE targets MET on the primary tuning cast (P16N 2015 cast 003:
-u 0.045, v 0.033 m/s, hard test assertions). Multi-cruise bulk validation: I7N 2018
-124/124 casts (53 pass both targets; 10 "exploded" casts are an open ill-conditioning
-lead) and A16N 2013 95/95 casts (15 pass both; all 59 deep >4 km casts fail — open
+u 0.0415, v 0.0447 m/s, hard test assertions). Multi-cruise bulk validation: I7N 2018
+124/124 casts (53 pass both targets — predates the fix below; not yet re-tallied) and
+A16N 2013 95/95 casts (15 pass both; all 59 deep >4 km casts fail — open
 investigation, see `test_data/2013_A16N/DOWNLOAD_NOTES.md`; several leads already
 ruled out with direct evidence). See `docs/HANDOVER.md` for current session-to-session
 status.
 
+**2026-07-17**: root-caused and fixed a rank-deficient-`lstsq` bug that explained 9 of
+I7N's 10 "exploded" casts (unconstrained depth bin's near-zero singular value wasn't
+truncated by scipy's default cutoff — switched to `numpy.linalg.lstsq(rcond=None)`).
+Cast 018 is a different, still-open issue.
+
 Open gaps: CLI wiring (stubs exist but raise `NotImplementedError`), `lanarrow`
-outlier-trim port, the A16N deep-cast and I7N exploded-cast investigations above.
+outlier-trim port, the A16N deep-cast divergence, I7N cast 018 (see `docs/HANDOVER.md`).
 
 Stack: Python 3.11, `uv`, `ruff`, `pytest`, `numpy`/`xarray`/`scipy`/`netCDF4`. Docker image scaffolded.
 **Test invocation note:** `uv run pytest` (without `python -m`) fails on some machines

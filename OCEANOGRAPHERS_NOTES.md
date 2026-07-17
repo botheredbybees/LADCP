@@ -71,7 +71,9 @@ resolved (root causes: a `medianan` vs `nanmedian` reference-selection bug, a
 several ported edit/weight-construction steps — full trail in
 `PROGRAMMERS_NOTES.md`). Current numbers, hard test assertions (not `xfail`):
 
-**u RMSE = 0.0450 m/s, v RMSE = 0.0333 m/s** (target < 0.05 m/s), r(u) +0.77.
+**u RMSE = 0.0415 m/s, v RMSE = 0.0447 m/s** (target < 0.05 m/s). Updated
+2026-07-17 after the rank-deficient-`lstsq` fix (`docs/HANDOVER.md`) shifted these
+slightly from the original 0.0450/0.0333 — both still comfortably under target.
 
 ### Multi-cruise bulk validation (2026-07-11 to 2026-07-12)
 
@@ -87,11 +89,18 @@ archived SADCP/barotropic constraints (read back from the reference NetCDF attrs
 Full per-cast tables: `docs/validation/BULK_VALIDATION_REPORT.md`.
 
 **I7N**: strong evidence the core pipeline generalizes — u median RMSE close to the
-tuning cast's own result on a 124-cast unseen cruise. Two open findings: (1) 10 casts
-"explode" numerically (u RMSE ~10⁶–10¹⁰, a bimodal ill-conditioning failure mode, not
-gradual disagreement — depths 3440–4560 m, mid-pack not deepest); (2) the 41
-"marginal" casts are dominated by v-misses, consistent with the un-ported `lanarrow`
-outlier-trim step (LDEO step 11).
+tuning cast's own result on a 124-cast unseen cruise. Two open findings, one now
+mostly resolved: (1) 10 casts "explode" numerically (u RMSE ~10⁶–10¹⁰, a bimodal
+ill-conditioning failure mode, not gradual disagreement — depths 3440–4560 m,
+mid-pack not deepest). **Root-caused and fixed 2026-07-17**: 9 of the 10 shared an
+identical rank-deficient `lstsq` bug (an unconstrained depth bin's near-zero
+singular value wasn't truncated by scipy's default cutoff); switching to
+`numpy.linalg.lstsq(rcond=None)` fixes them (verified on 060, 042; the other 6
+share the identical signature but weren't individually re-run). One cast (018) is
+a different, still-open issue — well-conditioned but genuinely extreme output.
+The pass-rate numbers in the table above predate this fix; see `docs/HANDOVER.md`.
+(2) the 41 "marginal" casts are dominated by v-misses, consistent with the
+un-ported `lanarrow` outlier-trim step (LDEO step 11).
 
 **A16N**: shallow/mid casts (≤4000 m) perform well (19/36 pass u); all 59 casts deeper
 than 4000 m fail (u RMSE ≥ 0.05), with error structure described in
@@ -143,11 +152,11 @@ The inverse solver accepts three types of external velocity constraints:
 2. ~~Coordinate transforms~~ ✓
 3. ~~QA editing~~ ✓
 4. ~~Shear-based solution~~ ✓
-5. ~~Inverse solution~~ ✓ — RMSE targets met on P16N cast 003 (u 0.045, v 0.033)
+5. ~~Inverse solution~~ ✓ — RMSE targets met on P16N cast 003 (u 0.0415, v 0.0447)
 6. ~~NetCDF output (`ladcp2cdf.m` equivalent)~~ ✓
 7. ~~Multi-cruise bulk validation (I7N, A16N)~~ ✓ — see "Multi-cruise bulk validation" above
 8. A16N deep-cast (>4 km) divergence — **open investigation**, several leads ruled out (see above and `test_data/2013_A16N/DOWNLOAD_NOTES.md`)
-9. I7N "exploded" casts (10/124, numerical ill-conditioning) — **open investigation**
+9. ~~I7N "exploded" casts (10/124, numerical ill-conditioning)~~ ✓ 9/10 fixed 2026-07-17 (rank-deficient `lstsq`) — cast 018 remains, different cause, **open**
 10. `lanarrow` outlier-trim port (LDEO step 11) — lead candidate for closing the I7N v-RMSE gap
 11. QA diagnostics and plots — Planned
 12. End-to-end CLI (`ladcp process <cast>`) — Planned

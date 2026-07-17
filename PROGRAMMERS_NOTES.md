@@ -112,8 +112,10 @@ The integration test in `tests/integration/test_inverse_p16n_cast003.py` runs th
 
 ### Current status (2026-07-17)
 
-**Both RMSE targets MET as hard test assertions** (u 0.0450, v 0.0333 m/s, both <0.05;
-r(u) +0.77) — the section below is the historical trail of how the gap was closed and
+**Both RMSE targets MET as hard test assertions** (u 0.0415, v 0.0447 m/s, both <0.05
+— updated 2026-07-17; a rank-deficient-`lstsq` fix, see `docs/HANDOVER.md`, shifted
+these slightly from the original 0.0450/0.0333, still comfortably under target) — the
+section below is the historical trail of how the gap was closed and
 is kept for the design rationale, but the numbers in it are superseded. Since that
 milestone the pipeline has also been run cross-cruise on I7N 2018 (124/124 casts, 53
 pass both targets, u median 0.043) and A16N 2013 (95/95 casts, 15 pass both, all 59

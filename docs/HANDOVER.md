@@ -1,15 +1,98 @@
 # Handover: P16N Cast 003 RMSE Closure
 
-## NEXT: bulk validation + ps.shear port
+## NEXT: remaining exploded I7N casts, cast 018, A16N deep-cast mechanism
 
-`BULK_VALIDATION_BRIEF.md` (repo root) is a self-contained task brief for
-a cheap-model session: download all remaining I7N + A16N raw casts from
-NCEI and run validate_multicast over ~215 casts, producing
-`BULK_VALIDATION_REPORT.md`. Launch with: "Read and execute
-BULK_VALIDATION_BRIEF.md". Resumable across session limits (skips
-existing files/batches). The main-session follow-up is the getinv.m
-ps.shear constraint port (deep-cast lead, below) and triage of whatever
-the bulk run surfaces.
+Three independent open threads, roughly in order of tractability:
+
+1. **7 untested "exploded" I7N casts** (042 and 060 confirmed fixed by
+   commit `5635685`; 062, 086, 099, 102, 103, 118, 119 all showed the
+   identical rank-deficiency signature during classification but weren't
+   individually re-run post-fix — should just work, worth a quick
+   `validate_multicast.py` re-run to confirm and update
+   `docs/validation/BULK_VALIDATION_REPORT.md`.
+2. **I7N cast 018** — the one "exploded" cast NOT fixed by `5635685`
+   (confirmed unaffected: still u RMSE 3.24, well-conditioned, scipy and
+   numpy agree to full precision). This is a *different* bug — a real
+   solve of bad/extreme input data, not a numerical artifact. Needs its
+   own root-cause investigation (likely a data-editing gap: one bad
+   SADCP or bottom-track point, or a mis-weighted super-ensemble slipping
+   through). Start with `scripts/diag_rmse_strata.py` or a per-bin dump
+   on cast 018 to localize which bin/constraint produces the 38.7 m/s
+   value at bin index 864.
+3. **A16N deep-cast (>4 km) divergence** — still open after a full
+   session of diagnostics (see `test_data/2013_A16N/DOWNLOAD_NOTES.md`
+   "ps.shear lead — REFUTED"). `ps.shear`/`smallfac`, solve method,
+   observation-count starvation, and heave/winch contamination are all
+   ruled out with direct evidence. The one unexplained concrete lead:
+   merging down-cast and up-cast observations helps shallow casts a lot
+   but appears to hurt deep casts relative to a (more crudely
+   constrained) down-only/up-only solve — not yet isolated as
+   phase-timing-related vs. instrument-source-related (DL vs UL).
+
+Also worth doing once the above settle: re-run the full bulk validation
+(`docs/validation/BULK_VALIDATION_BRIEF.md`'s harness, not the brief
+itself) to get fresh I7N pass-rate numbers now that 042/060 (and likely
+7 more) are fixed — the "10 exploded, 53/124 pass both" headline numbers
+in `docs/validation/BULK_VALIDATION_REPORT.md` predate this session's fix.
+
+## 2026-07-17 (fourth session): exploded-cast root cause found + fixed; A16N ps.shear lead refuted
+
+**I7N exploded-cast bug found and fixed (commit `5635685`).** Root cause:
+`_solve_lsq()` called `scipy.linalg.lstsq(A, d, check_finite=False)` with
+no rank cutoff. scipy's default isn't scaled by matrix dimensions, so on
+these large super-ensemble systems it failed to truncate the ~1e-13
+singular value produced by a genuinely unconstrained depth bin (zero
+observations, untouched by any constraint row — verified SADCP/BT/
+barotropic rows only ever touch the CTD-velocity block or degenerate to
+zero weight for a zero-observation column). Treated as full rank, that
+free column resolved to ~1e10-1e11 m/s instead of the correct
+minimum-norm ~0. Switched to `numpy.linalg.lstsq(A, d, rcond=None)`
+(dimension-scaled cutoff), verified against the real dumped cast-060
+matrix before changing anything. Fixes **9 of the 10** "exploded" I7N
+casts (all share the identical signature: rank-deficient by exactly 1,
+one all-zero column) — cast 060 now u 0.030/v 0.017 (passes both
+targets), cast 042 now u 0.060/v 0.056 (sane). Cast 018 is the exception,
+confirmed unaffected (different bug, see NEXT above). Full suite: 256
+passed / 8 skipped, no regressions; I7N 003/010 bit-identical to pre-fix;
+P16N cast 003 still meets both targets (u 0.0415, v 0.0447 — v shifted
+~34% from 0.0333, a real side effect of the correct cutoff truncating
+more near-zero directions on that cast too, disclosed and accepted, not
+a bug). TDD: failing regression test written first
+(`test_solve_lsq_zero_column_does_not_explode`), confirmed red, then
+fixed, confirmed green. Built on a short-lived branch
+(`fix/lstsq-rank-deficient-explosion`) and fast-forward merged.
+
+**A16N `ps.shear` lead refuted; three more hypotheses ruled out.** Full
+writeup in `test_data/2013_A16N/DOWNLOAD_NOTES.md`. Summary: the
+documented lead ("port getinv.m's ps.shear rows into compute_inverse")
+does not hold up — `getshear2.m` runs strictly *after* the inverse solve
+in both the current reference and the exact software snapshot LDEO used
+for A16N, and never writes `dr.u`/`dr.v`. `ps.shear=1` and
+`ps.smallfac=[1,0]` are identical on passing and failing casts (checked
+the real saved `.mat` params), so neither can be the differentiator.
+Also ruled out with direct checks: solve method (matches LDEO's
+minimum-norm choice), mid-column observation-count starvation (Python
+retains *more* data per bin than the reference, not less), the down/up
+split as a data-quality proxy (confounded — cruder constraint set, not a
+fair comparison), and ship/winch heave contamination (three independent
+checks — CTD descent-rate residual, ADCP tilt, W-anomaly editing
+rejection rate — all come back flat or inverted relative to what the
+hypothesis predicts). Root mechanism still open; see NEXT above.
+
+**Bulk validation report finalized.** The A16N section of
+`docs/validation/BULK_VALIDATION_REPORT.md` had been left as "re-run in
+progress" from a prior session even though the verified re-run had
+completed; a stray duplicate `BULK_VALIDATION_REPORT_A16N.md` (agent-era
+data, matched the verified re-run to the digit) was folded in and
+removed. I7N section (124/124, 53 pass both) was already accurate.
+
+**Docs reorganized** (commit `36d6187`): root markdown that had
+accumulated (`HANDOVER.md`, `VALIDATION_PLAN.md`,
+`BULK_VALIDATION_BRIEF.md`/`REPORT.md`, `CONTINUATION_PLAN.md`) moved
+under `docs/`; `README.md`/`PROGRAMMERS_NOTES.md`/
+`OCEANOGRAPHERS_NOTES.md`/`USER_NOTES.md`/`CLAUDE.md` were all frozen at
+a pre-2026-07-11 stale status (RMSE 0.07, xfail, gaps that are actually
+implemented) and brought current.
 
 ## 2026-07-11 (third session): A16N 2013 — third cruise, two new editing ports
 

@@ -23,7 +23,7 @@ Multi-cast validation across three unseen cruises (263 tests total, 255 passed /
 | Cruise | Casts | Pass both (u, v < 0.05) | u RMSE median | Notes |
 |---|---|---|---|---|
 | P16N 2015 | 1 (tuning cast) | — | 0.045 | Reference cast the pipeline was built against |
-| I7N 2018 | 124/124 | 53 (43%) | 0.043 | 10 casts numerically "explode" (RMSE ~10⁶–10¹⁰) — an open ill-conditioning lead |
+| I7N 2018 | 124/124 | 53 (43%) | 0.043 | 9/10 "exploded" casts (RMSE ~10⁶–10¹⁰) fixed 2026-07-17 (rank-deficient lstsq); numbers here predate the fix — see `docs/HANDOVER.md` |
 | A16N 2013 | 95/95 | 15 (16%) | 0.34 | Deep casts (>4 km) fail with large mid-column swings — open investigation, several leads ruled out |
 
 See `docs/HANDOVER.md` for the current session-to-session status and

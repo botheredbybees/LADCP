@@ -8,7 +8,7 @@ For shipboard and shore-based data officers working with LADCP data.
 
 The core scientific pipeline — ingestion, coordinate transforms, QA editing, the inverse velocity solver, and NetCDF output — is implemented and produces validated velocity profiles for full-water-column casts (`ladcp.pipeline.process_cast()` runs it end-to-end). However, the CLI (`ladcp process`, `ladcp check`) is still a stub and not yet wired to the pipeline.
 
-Validation against LDEO MATLAB reference output on the primary tuning cast (P16N 2015, cast 003) meets both RMSE targets: u 0.045 m/s, v 0.033 m/s (target < 0.05 m/s). Run cross-cruise on two cruises the pipeline never saw during development: I7N 2018 (124 casts, 53 pass both targets) and A16N 2013 (95 casts, 15 pass both — deep casts >4 km are a known, actively-investigated failure mode; see `test_data/2013_A16N/DOWNLOAD_NOTES.md`). See `docs/HANDOVER.md` for the current status. For production cruise processing, continue using LDEO_IX MATLAB software until the CLI is wired up and the A16N deep-cast issue is resolved.
+Validation against LDEO MATLAB reference output on the primary tuning cast (P16N 2015, cast 003) meets both RMSE targets: u 0.0415 m/s, v 0.0447 m/s (target < 0.05 m/s). Run cross-cruise on two cruises the pipeline never saw during development: I7N 2018 (124 casts, 53 pass both targets) and A16N 2013 (95 casts, 15 pass both — deep casts >4 km are a known, actively-investigated failure mode; see `test_data/2013_A16N/DOWNLOAD_NOTES.md`). See `docs/HANDOVER.md` for the current status. For production cruise processing, continue using LDEO_IX MATLAB software until the CLI is wired up and the A16N deep-cast issue is resolved.
 
 ## Installation
 
