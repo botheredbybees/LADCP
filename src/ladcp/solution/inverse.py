@@ -6,7 +6,6 @@ least-squares inversion) from the LDEO_IX MATLAB reference implementation.
 from __future__ import annotations
 
 import numpy as np
-import scipy.linalg
 from dataclasses import dataclass, replace
 from scipy.sparse import csr_matrix
 
@@ -927,8 +926,19 @@ def _solve_lsq(
 
     Error formula matches MATLAB lesqfit:
         me = sqrt(diag(inv(A'A)) * ||d - Am||² / (n - p))
+
+    Uses numpy's rcond=None (dimension-scaled: max(M,N) * eps), not
+    scipy.linalg.lstsq's default. scipy's default rank cutoff is not
+    scaled by matrix size and fails to truncate near-zero singular values
+    that arise from genuinely unconstrained columns (e.g. a depth bin
+    with zero observations) once the system is large enough — the
+    truncation-worthy singular value ends up a few times larger than
+    scipy's fixed threshold but still ~13 orders of magnitude below the
+    next-smallest one, so scipy treats the system as full rank and
+    returns a coefficient of ~1e10-1e11 for that column instead of the
+    correct minimum-norm ~0. numpy's rcond correctly catches this.
     """
-    m, _, _, _ = scipy.linalg.lstsq(A, d, check_finite=False)
+    m, _, _, _ = np.linalg.lstsq(A, d, rcond=None)
 
     # Error estimate via normal equations
     dm = A @ m

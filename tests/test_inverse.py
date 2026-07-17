@@ -290,6 +290,33 @@ def test_solve_lsq_error_shape():
     assert m.shape == me.shape == (5,)
 
 
+def test_solve_lsq_zero_column_does_not_explode():
+    """A genuinely unconstrained (all-zero) column must resolve near zero,
+    not blow up, even when the system is large enough for scipy's default
+    rank cutoff to miss the resulting near-zero singular value.
+
+    Regression test for the I7N bulk-validation "exploded cast" bug: 9/10
+    exploded casts had exactly one depth bin with zero observations,
+    making the super-ensemble system rank-deficient by 1.
+    scipy.linalg.lstsq's default cutoff (unlike numpy's dimension-scaled
+    rcond) failed to truncate the resulting ~1e-13 singular value,
+    producing coefficients up to ~1e11 instead of the correct
+    minimum-norm ~0 for that column. Needs a large-ish matrix to
+    reproduce: at small sizes scipy's cutoff catches the zero column
+    fine, so this is scale-dependent, matching the real casts.
+    """
+    from ladcp.solution.inverse import _solve_lsq
+    rng = np.random.default_rng(42)
+    A = rng.normal(size=(5000, 200))
+    A[:, 0] = 0.0  # unconstrained column, mirrors a zero-observation depth bin
+    d = rng.normal(size=5000)
+    m, me = _solve_lsq(A, d)
+    assert np.all(np.isfinite(m))
+    assert abs(m[0]) < 1e-6, (
+        f"unconstrained column should solve near zero (minimum-norm), got {m[0]:.3e}"
+    )
+
+
 def test_compute_inverse_returns_result():
     """compute_inverse must return an InverseResult with z, u, v arrays.
 
